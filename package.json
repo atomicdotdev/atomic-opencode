@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "1.4.10",
+    "haikunator": "^2.1.2"
+  }
+}
