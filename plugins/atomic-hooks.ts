@@ -2,18 +2,33 @@
  * Atomic VCS Hooks Plugin for OpenCode
  * 1 session = 1 view. Each turn records with provenance.
  */
-export const AtomicHooksPlugin = async ({ project, client, $, directory, worktree }) => {
+export const AtomicHooksPlugin = async ({
+  project,
+  client,
+  $,
+  directory,
+  worktree,
+}) => {
   try {
-    const v = Bun.spawnSync(["atomic", "--version"], { stdout: "pipe", stderr: "pipe" });
+    const v = Bun.spawnSync(["atomic", "--version"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     if (v.exitCode !== 0) return {};
-    const d = Bun.spawnSync(["test", "-d", `${directory}/.atomic`], { stdout: "pipe", stderr: "pipe" });
+    const d = Bun.spawnSync(["test", "-d", `${directory}/.atomic`], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     if (d.exitCode !== 0) return {};
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 
   let sid = null;
   let model = null;
   let provider = null;
   let turns = 0;
+  const toolStartTimes = new Map();
 
   async function hook(verb, payload) {
     try {
@@ -27,22 +42,29 @@ export const AtomicHooksPlugin = async ({ project, client, $, directory, worktre
       if (event.type === "session.created") {
         sid = event.properties.sessionID;
         await hook("session-start", {
-          session_id: sid, source: "startup",
-          cwd: directory, timestamp: new Date().toISOString(),
+          session_id: sid,
+          source: "startup",
+          cwd: directory,
+          timestamp: new Date().toISOString(),
         });
       } else if (event.type === "session.idle") {
         if (!sid) return;
         turns++;
         await hook("stop", {
-          session_id: sid, turn_number: turns,
-          model: model, provider: provider,
-          cwd: directory, timestamp: new Date().toISOString(),
+          session_id: sid,
+          turn_number: turns,
+          model: model,
+          provider: provider,
+          cwd: directory,
+          timestamp: new Date().toISOString(),
         });
       } else if (event.type === "session.deleted") {
         if (!sid) return;
         await hook("session-end", {
-          session_id: sid, reason: "deleted",
-          cwd: directory, timestamp: new Date().toISOString(),
+          session_id: sid,
+          reason: "deleted",
+          cwd: directory,
+          timestamp: new Date().toISOString(),
         });
       }
     },
@@ -52,12 +74,46 @@ export const AtomicHooksPlugin = async ({ project, client, $, directory, worktre
         model = input.model.modelID;
         provider = input.model.providerID;
       }
-      const prompt = output.parts.filter(p => p.type === "text").map(p => p.text).join("\n").trim();
+      const prompt = output.parts
+        .filter((p) => p.type === "text")
+        .map((p) => p.text)
+        .join("\n")
+        .trim();
       await hook("user-prompt", {
         session_id: sid || input.sessionID,
         prompt: prompt || undefined,
-        model: model, provider: provider,
-        cwd: directory, timestamp: new Date().toISOString(),
+        model: model,
+        provider: provider,
+        cwd: directory,
+        timestamp: new Date().toISOString(),
+      });
+    },
+
+    "tool.execute.before": async (input, output) => {
+      if (!sid) return;
+      toolStartTimes.set(input.callID, Date.now());
+      await hook("before-tool", {
+        session_id: sid,
+        tool_name: input.tool,
+        tool_call_id: input.callID,
+        cwd: directory,
+        timestamp: new Date().toISOString(),
+      });
+    },
+
+    "tool.execute.after": async (input, output) => {
+      if (!sid) return;
+      const startTime = toolStartTimes.get(input.callID);
+      const duration = startTime ? Date.now() - startTime : undefined;
+      toolStartTimes.delete(input.callID);
+      await hook("after-tool", {
+        session_id: sid,
+        tool_name: input.tool,
+        tool_call_id: input.callID,
+        status: "completed",
+        duration: duration,
+        cwd: directory,
+        timestamp: new Date().toISOString(),
       });
     },
 

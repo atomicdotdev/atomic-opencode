@@ -1,6 +1,6 @@
 ---
 name: atomic-vault
-description: "Teaches the full Atomic vault workflow: goals, intents, memory, views integration, and the end-to-end development cycle using atomic vault commands."
+description: Teaches the Atomic vault workflow for goals, intents, memory, and the development cycle.
 ---
 
 # Atomic Vault Workflow

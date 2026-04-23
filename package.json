@@ -1,6 +1,36 @@
 {
+  "name": "atomic-opencode",
+  "version": "0.1.0",
+  "description": "Atomic VCS integration for OpenCode — automatic turn recording with AI provenance, intent tracking, and knowledge graph skills.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/atomicdotdev/atomic-opencode"
+  },
+  "keywords": [
+    "atomic",
+    "opencode",
+    "vcs",
+    "provenance",
+    "ai-agent",
+    "version-control"
+  ],
+  "main": "plugins/atomic-hooks.ts",
+  "files": [
+    "plugins/",
+    "agents/",
+    "skills/",
+    "opencode.json",
+    "install.js",
+    "install.sh"
+  ],
+  "bin": {
+    "atomic-opencode": "install.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js --silent"
+  },
   "dependencies": {
-    "@opencode-ai/plugin": "1.4.10",
-    "haikunator": "^2.1.2"
+    "@opencode-ai/plugin": ">=1.0.0"
   }
 }
