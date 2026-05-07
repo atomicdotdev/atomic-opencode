@@ -28,13 +28,23 @@ export const AtomicHooksPlugin = async ({
   let model = null;
   let provider = null;
   let turns = 0;
+  let turnActive = false;
   const toolStartTimes = new Map();
 
+
+  // Serialize all hook calls so concurrent opencode events (e.g.,
+  // session.created + chat.message firing back-to-back) don't race on
+  // session.json — atomic's SessionStore has no file lock, last writer wins.
+  let hookQueue: Promise<unknown> = Promise.resolve();
   async function hook(verb, payload) {
-    try {
-      const json = JSON.stringify(payload);
-      await $`echo ${json} | atomic agent hooks opencode ${verb} 2>/dev/null`.nothrow();
-    } catch {}
+    const json = JSON.stringify(payload);
+    const next = hookQueue.then(async () => {
+      try {
+        await $`echo ${json} | atomic agent hooks opencode ${verb} 2>/dev/null`.nothrow();
+      } catch {}
+    });
+    hookQueue = next.catch(() => {});
+    await next;
   }
 
   return {
@@ -48,9 +58,10 @@ export const AtomicHooksPlugin = async ({
           timestamp: new Date().toISOString(),
         });
       } else if (event.type === "session.idle") {
-        if (!sid) return;
+        if (!sid || !turnActive) return;
+        turnActive = false;
         turns++;
-        await hook("stop", {
+        await hook("after-agent", {
           session_id: sid,
           turn_number: turns,
           model: model,
@@ -79,6 +90,7 @@ export const AtomicHooksPlugin = async ({
         .map((p) => p.text)
         .join("\n")
         .trim();
+      turnActive = true;
       await hook("user-prompt", {
         session_id: sid || input.sessionID,
         prompt: prompt || undefined,
@@ -96,6 +108,7 @@ export const AtomicHooksPlugin = async ({
         session_id: sid,
         tool_name: input.tool,
         tool_call_id: input.callID,
+        tool_input: output?.args ?? {},
         cwd: directory,
         timestamp: new Date().toISOString(),
       });
@@ -110,8 +123,14 @@ export const AtomicHooksPlugin = async ({
         session_id: sid,
         tool_name: input.tool,
         tool_call_id: input.callID,
+        tool_input: input.args ?? {},
+        tool_response: {
+          title: output?.title,
+          output: output?.output,
+          metadata: output?.metadata,
+        },
         status: "completed",
-        duration: duration,
+        duration_ms: duration,
         cwd: directory,
         timestamp: new Date().toISOString(),
       });
