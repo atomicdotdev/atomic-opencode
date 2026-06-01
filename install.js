@@ -30,6 +30,10 @@ const LINKS = [
     dst: "skills/atomic-vault/SKILL.md",
   },
   {
+    src: "skills/atomic-vcs/SKILL.md",
+    dst: "skills/atomic-vcs/SKILL.md",
+  },
+  {
     src: "skills/code-intelligence/SKILL.md",
     dst: "skills/code-intelligence/SKILL.md",
   },
@@ -87,7 +91,7 @@ function doInstall() {
   if (!silent) {
     console.log();
     console.log(
-      `✓ atomic-opencode installed (${installed} linked, ${skipped} skipped)`
+      `✓ atomic-opencode installed (${installed} linked, ${skipped} skipped)`,
     );
     console.log(`  Target: ${TARGET}`);
     console.log();
