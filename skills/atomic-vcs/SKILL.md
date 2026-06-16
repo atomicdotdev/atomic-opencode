@@ -6,14 +6,13 @@ description: Inspect repository state and history with the Atomic VCS CLI — st
 # Working with Atomic VCS
 
 Atomic is the version control system for this repository — not Git. You and Atomic
-are a pair: **the OpenCode plugin records your work automatically with full AI
-provenance** (model, tokens, cost, session, the decision graph) when the turn ends,
-and these commands let you **read that history back**. Use them to ground yourself in
-reality instead of guessing.
+are a pair: **hooks record your work automatically with full AI provenance** (model,
+tokens, cost, session, the decision graph), and these commands let you **read that
+history back**. Use them to ground yourself in reality instead of guessing.
 
-You do **not** run `atomic add` or `atomic record` — the OpenCode plugin does that at
-turn end. Everything in this skill is **read-only inspection**, safe to run at any
-point in a turn, as often as you like.
+You do **not** run `atomic add` or `atomic record` — the hook system does that at turn
+end. Everything in this skill is **read-only inspection**, safe to run at any point in
+a turn, as often as you like.
 
 ## The four commands
 
@@ -184,11 +183,11 @@ atomic diff --stat          # confirm the size/shape of the change
 ## Tips
 
 - These commands are read-only — run them freely; they never modify the repo.
-- You don't record (`atomic add`/`record`) — the OpenCode plugin does, with provenance.
-  These commands let you read that provenance back.
+- You don't record (`atomic add`/`record`) — hooks do, with provenance. These commands
+  let you read that provenance back.
 - Quote sequence references so the shell doesn't treat `#` as a comment: `atomic change '#42'`.
 - Add `-f json` (log/change) or `--name-status` (diff) when you need to parse output.
 - For *code structure and content* search (functions, definitions, text), use the
-  `@code-intelligence` skill (`atomic vault query ...`). This skill is for *version
+  `code-intelligence` skill (`atomic vault query ...`). This skill is for *version
   history and working-copy state*.
-- For the goals/intents/memory and vault sync workflow, see the `@atomic-vault` skill.
+- For the goals/intents/memory and recording workflow, see the `atomic-vault` skill.
