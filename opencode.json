@@ -1,8 +1,26 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "atomic/mradermacher/Qwen3_6-34B-80L-Fable-5-Heretic_i1-IQ4_XS",
   "permission": {
-    "edit": "allow",
     "bash": "allow",
-    "skill": { "*": "allow" }
+    "edit": "allow",
+    "skill": {
+      "*": "allow"
+    }
+  },
+  "provider": {
+    "atomic": {
+      "models": {
+        "mradermacher/Qwen3_6-34B-80L-Fable-5-Heretic_i1-IQ4_XS": {
+          "name": "mradermacher/Qwen3_6-34B-80L-Fable-5-Heretic_i1-IQ4_XS"
+        }
+      },
+      "name": "Atomic Chat",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "atomic",
+        "baseURL": "http://127.0.0.1:1337/v1"
+      }
+    }
   }
 }
