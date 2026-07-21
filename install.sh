@@ -10,6 +10,12 @@ ln -sf "$SCRIPT_DIR/agents/atomic.md" "$TARGET/agents/atomic.md"
 ln -sf "$SCRIPT_DIR/plugins/atomic-hooks.ts" "$TARGET/plugins/atomic-hooks.ts"
 ln -sf "$SCRIPT_DIR/opencode.json" "$TARGET/opencode.json"
 ln -sf "$SCRIPT_DIR/package.json" "$TARGET/package.json"
+# install.js must sit next to package.json: bun install below runs the
+# package's `postinstall` ("node install.js --silent") from $TARGET. Without
+# this link a fresh install fails with MODULE_NOT_FOUND (node resolves the
+# symlink to this checkout, so __dirname stays correct and the re-run is
+# idempotent — install.js only replaces its own symlinks).
+ln -sf "$SCRIPT_DIR/install.js" "$TARGET/install.js"
 
 # Skills — explicit, no globs
 for name in atomic-vault atomic-vcs code-intelligence; do
