@@ -31,6 +31,6 @@
     "postinstall": "node install.js --silent"
   },
   "dependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": "1.18.0"
   }
 }
