@@ -4,6 +4,8 @@
 
 Automatic turn recording with AI provenance, intent tracking, and knowledge graph skills.
 
+> **Definitive source:** this repository lives on Atomic storage at `https://atomic.atomic.storage/workspaces/oss/projects/atomic-opencode/code`. The GitHub repo is a mirror.
+
 ## What it does
 
 - **1 session = 1 view** — a draft view is created automatically when you start OpenCode
@@ -14,30 +16,26 @@ Automatic turn recording with AI provenance, intent tracking, and knowledge grap
 
 ## Install
 
-### From npm
+### Quick start
 
-Add to your global OpenCode config (`~/.config/opencode/opencode.json`):
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["atomic-opencode"]
-}
-```
-
-OpenCode installs it automatically on next startup.
-
-Then run the setup to link the agent prompt and skills:
+Requires the [Atomic VCS](https://atomic.dev) CLI on your PATH. Then:
 
 ```bash
-npx atomic-opencode
+atomic agent enable --agent opencode
 ```
 
-### From source (development)
+The enable command syncs the package from Atomic storage and links the plugin, agent prompt, and skills into `~/.config/opencode/`. The plugin is plain TypeScript — no build step needed. Restart OpenCode after enabling.
+
+### Development install
+
+From a local checkout:
 
 ```bash
 git clone https://github.com/atomicdotdev/atomic-opencode
 cd atomic-opencode
+atomic agent enable --agent opencode --from .
+
+# or the legacy script path:
 ./install.sh
 ```
 
@@ -96,7 +94,7 @@ atomic agent attest
 ## Uninstall
 
 ```bash
-npx atomic-opencode --uninstall
+atomic agent disable --agent opencode
 ```
 
 Removes symlinks from `~/.config/opencode/`. Your OpenCode config and other plugins are not affected.
