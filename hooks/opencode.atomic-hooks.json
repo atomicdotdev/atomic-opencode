@@ -1,0 +1,14 @@
+{
+  "target": "~/.config/opencode/opencode.json",
+  "hooks_key": "hooks",
+  "command_prefix": "atomic-hooks.ts",
+  "hooks": {},
+  "merge": {
+    "plugin": ["./plugins/atomic-hooks.ts"],
+    "permission": {
+      "edit": "allow",
+      "bash": "allow",
+      "skill": { "*": "allow" }
+    }
+  }
+}
