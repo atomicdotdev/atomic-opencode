@@ -38,6 +38,9 @@ export const AtomicHooksPlugin = async ({
   const reasoningParts = new Map();
   // Wall-clock turn start (set in chat.message) for turn_duration_ms.
   let turnStartTime = null;
+  // Latest OpenCode todo snapshot. Items may carry a stable upstream id;
+  // Atomic preserves it, otherwise it creates a turn-local snapshot id.
+  let todos = [];
 
   function logFailure(verb, message) {
     try {
@@ -107,6 +110,7 @@ export const AtomicHooksPlugin = async ({
           turn_duration_ms,
           reasoning_blocks:
             reasoning_blocks.length > 0 ? reasoning_blocks : undefined,
+          todos: todos.length > 0 ? todos : undefined,
           cwd: directory,
           timestamp: new Date().toISOString(),
         });
@@ -124,6 +128,16 @@ export const AtomicHooksPlugin = async ({
       } else if (event.type === "message.part.removed") {
         const partId = event.properties?.partID;
         if (partId) reasoningParts.delete(partId);
+      } else if (event.type === "todo.updated") {
+        sid = sid ?? event.properties.sessionID;
+        if (Array.isArray(event.properties.todos)) {
+          todos = event.properties.todos.map((todo) => ({
+            ...(todo.id ? { id: todo.id } : {}),
+            content: todo.content,
+            status: todo.status,
+            priority: todo.priority,
+          }));
+        }
       } else if (event.type === "session.deleted") {
         sid = sid ?? event.properties.sessionID;
         reasoningParts.clear();
