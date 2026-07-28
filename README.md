@@ -57,11 +57,12 @@ opencode                 # start OpenCode — press Tab to switch to Atomic agen
 
 The Atomic agent:
 
-1. Creates an intent for each prompt (`atomic vault intent create`)
-2. Reframes your request as a problem statement with success criteria
-3. Writes the plan into the intent file before coding
-4. Executes the tasks
-5. Hooks automatically record with provenance when the turn ends
+1. Creates a directive-based intent for each prompt (`atomic intent new`)
+2. Reframes your request as a problem — a mandatory `:::why`, acceptance criteria, and tasks
+3. Fills the intent's directives before coding
+4. Executes the tasks, then validates and attests the intent (`atomic intent validate` → `atomic intent attest`)
+5. Records durable memories of the right kind (`atomic memory new --kind …`), attested and linked
+6. Hooks automatically record the code changes with provenance when the turn ends
 
 You never need to run `atomic add` or `atomic record` — the hooks handle it.
 
