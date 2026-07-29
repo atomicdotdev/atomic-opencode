@@ -17,10 +17,16 @@ ln -sf "$SCRIPT_DIR/package.json" "$TARGET/package.json"
 # idempotent — install.js only replaces its own symlinks).
 ln -sf "$SCRIPT_DIR/install.js" "$TARGET/install.js"
 
-# Skills — explicit, no globs
-for name in atomic-vault atomic-vcs code-intelligence; do
+# Skills — every skills/<name>/SKILL.md in this checkout. Globbed rather than
+# listed so a newly added skill ships without a matching edit here (the reason
+# decision-record silently failed to install while the agent prompt referenced it).
+skills_linked=""
+for skill_dir in "$SCRIPT_DIR"/skills/*/; do
+  [ -f "$skill_dir/SKILL.md" ] || continue
+  name="$(basename "$skill_dir")"
   mkdir -p "$TARGET/skills/$name"
-  ln -sf "$SCRIPT_DIR/skills/$name/SKILL.md" "$TARGET/skills/$name/SKILL.md"
+  ln -sf "$skill_dir/SKILL.md" "$TARGET/skills/$name/SKILL.md"
+  skills_linked="${skills_linked:+$skills_linked, }$name"
 done
 
 cd "$TARGET" && bun install --no-progress 2>/dev/null
@@ -38,8 +44,8 @@ What was installed:
                → ${TARGET}/plugins/atomic-hooks.ts
   • Config     opencode.json, package.json
                → ${TARGET}/
-  • Skills     atomic-vault, atomic-vcs, code-intelligence
-               → ${TARGET}/skills/  (@atomic-vault, @atomic-vcs, @code-intelligence)
+  • Skills     ${skills_linked}
+               → ${TARGET}/skills/
 
 Symlinks point back into this checkout:
   ${SCRIPT_DIR}
