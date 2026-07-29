@@ -37,6 +37,14 @@ const LINKS = [
     src: "skills/code-intelligence/SKILL.md",
     dst: "skills/code-intelligence/SKILL.md",
   },
+  {
+    src: "skills/decision-record/SKILL.md",
+    dst: "skills/decision-record/SKILL.md",
+  },
+  // OpenCode auto-discovers ~/.config/opencode/plugins/*.ts, so linking the
+  // file is all the registration the plugin needs — no `plugin` key has to be
+  // merged into the user's opencode.json (install.sh already relies on this).
+  { src: "plugins/atomic-hooks.ts", dst: "plugins/atomic-hooks.ts" },
   { src: "opencode.json", dst: "opencode.json" },
 ];
 

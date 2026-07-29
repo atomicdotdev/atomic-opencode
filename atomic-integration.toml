@@ -25,6 +25,14 @@ dst = "~/.config/opencode/skills/atomic-vault/SKILL.md"
 src = "skills/code-intelligence/SKILL.md"
 dst = "~/.config/opencode/skills/code-intelligence/SKILL.md"
 
+[[file]]
+src = "skills/atomic-vcs/SKILL.md"
+dst = "~/.config/opencode/skills/atomic-vcs/SKILL.md"
+
+[[file]]
+src = "skills/decision-record/SKILL.md"
+dst = "~/.config/opencode/skills/decision-record/SKILL.md"
+
 # Registers the plugin (and default permissions) into the user's opencode.json
 # via a deep merge — existing config is preserved, never clobbered.
 [[settings]]
