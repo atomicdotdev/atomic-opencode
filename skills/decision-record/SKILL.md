@@ -56,9 +56,14 @@ ID=$(atomic memory new --kind <chosen-kind> \
   --text "<the insight, self-contained>" \
   --derived-from urn:atomic:ac:<UID>-ac-1,urn:atomic:intent:<UID> \
   --json | jq -r .id)
-atomic memory validate "$ID"
-atomic memory attest "$ID"
+atomic memory attest "$ID"      # signs it — this is what fills attributedTo + proof
+atomic memory validate "$ID"    # confirm it conforms once signed
 ```
+
+**Attest first, then validate.** `attest` runs the full gate itself before
+signing, so nothing unchecked gets signed. Running `validate` on a *fresh*
+memory always exits 2 on `attributedTo` + `proof` — the two properties only
+`attest` can write — so `validate && attest` never reaches `attest`.
 
 Repeat for each insight (e.g. one `decision`, then one `lesson`).
 
@@ -67,8 +72,10 @@ Repeat for each insight (e.g. one `decision`, then one `lesson`).
   *decision · rationale · rejected alternative · outcome*. For a `lesson`:
   *what failed · the takeaway*.
 - **`--about`** *(optional)* — module/domain urns the memory concerns.
-- **Always `validate` then `attest`.** An unattested memory is unsigned and
-  untrusted — finish the lifecycle the same way you do for an intent.
+- **Always `attest`, then `validate`.** An unattested memory is unsigned and
+  untrusted — finish the lifecycle the same way you do for an intent. `attest`
+  gates before it signs; `validate` on an unsigned memory only ever reports the
+  two properties signing fills.
 
 ## 4. Link it to where it came from (`--derived-from`)
 
@@ -77,10 +84,20 @@ from, not just the intent. `--derived-from` takes one or more canonical urns
 (comma-separated); each becomes a `wasDerivedFrom` edge, so `atomic query` can
 walk *criterion → memory* or *todo → memory*.
 
+> **Reading those edges back takes the bare KG id, not the urn.**
+> `--derived-from` is written in urn form (`urn:atomic:intent:<UID>`), but
+> `atomic query neighbors` resolves only `intent:<UID>` / `memory:<id>` — handed
+> a urn it prints `No neighbors found` and still exits 0, which reads as "the
+> link failed" when the link is fine. Never construct these ids: copy them from
+> `atomic query search "<term>"`, which prints the resolvable form.
+
 Copy the id **verbatim** from the intent file / your todo list (the `#…` on the
 directive), wrapped in the matching urn. For intents, acceptance criteria, and
-tasks the id is the intent's ULID (UPPERCASE); the graph canonicalizes case, so
-verbatim is simplest:
+tasks the id is the intent's ULID (UPPERCASE) and the graph canonicalizes case,
+so verbatim is simplest. **Memory ids are the exception** — they are lowercase
+ULIDs and are *not* case-folded, so `urn:atomic:memory:<id>` must match the id
+exactly as `atomic memory list` prints it, or the edge silently points at a node
+that does not exist:
 
 | The insight came from… | Pass |
 |---|---|
