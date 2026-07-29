@@ -165,6 +165,19 @@ the actual checks), then flip its `status=unmet` → `status=met` in the intent
 file with your **file-editing tool** (never bash, Python, or sed — that bypasses
 the vault), and `atomic vault sync`. Do not mark a criterion met speculatively.
 
+**Marking a criterion met takes three attributes, not one.** The gate rejects a
+checked box with nothing behind it, so set `verifiedBy` and `evidence` in the
+same edit:
+
+```markdown
+:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy=<who/what checked it> evidence="<how it was checked>"}
+```
+
+`verifiedBy` names what did the checking (a DID, a test name, a person);
+`evidence` records how (a command that passed, a change urn, an observation).
+Flipping only `status=met` makes `atomic intent validate` fail with
+`a met acceptance criterion must carry verifiedBy and evidence`.
+
 You do **not** create or switch views, and you do **not** run `atomic add` or
 `atomic record` — the integration's hooks own all of that:
 
