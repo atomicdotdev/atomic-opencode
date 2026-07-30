@@ -120,9 +120,11 @@ atomic memory validate "$ID"    # confirm it conforms once signed
 
 `--derived-from` takes canonical urns (comma-separated), each becoming a
 `wasDerivedFrom` edge in the graph: `urn:atomic:ac:<UID>-ac-N` (acceptance
-criterion), `urn:atomic:task:<UID>-N` (task), `urn:atomic:todo:<id>` (todo),
-`urn:atomic:intent:<UID>` (fallback). Read the `<UID>` and criterion/task ids
-straight from the intent file.
+criterion), `urn:atomic:task:<UID>-N` (task), and
+`urn:atomic:intent:<UID>` (fallback). For a todo, use
+`atomic query search "<todo text>"`, copy its exact KG id, and prefix it with
+`urn:atomic:`; todo nodes may be session-scoped. Read intent and criterion/task
+ids straight from the intent file.
 
 Record only genuine insights (chose X over Y and why, a corrective lesson, a
 constraint discovered, a durable preference/context) — **not** routine steps or
