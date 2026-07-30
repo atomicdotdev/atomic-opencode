@@ -44,6 +44,16 @@ Work the tasks. Verify each, then flip its acceptance-criterion
 `status=unmet` → `status=met` with your file-editing tool (never bash/Python/
 sed), and `atomic vault sync`.
 
+**A met criterion needs three attributes, not one.** The gate rejects a checked
+box with nothing behind it, so add `verifiedBy` and `evidence` in the same edit:
+
+```markdown
+:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy="<who/what checked it>" evidence="<how it was checked>"}
+```
+
+Setting only `status=met` fails with `a met acceptance criterion must carry
+verifiedBy and evidence`.
+
 ### 4. Validate, attest, and complete
 
 ```bash
@@ -73,7 +83,8 @@ source and attested. One memory per insight — or none. See `@decision-record`.
 ```bash
 ID=$(atomic memory new --kind <kind> --text "<insight>" \
   --derived-from urn:atomic:ac:<UID>-ac-1,urn:atomic:intent:<UID> --json | jq -r .id)
-atomic memory validate "$ID" && atomic memory attest "$ID"
+atomic memory attest "$ID"      # signs it — fills attributedTo + proof
+atomic memory validate "$ID"    # confirm it conforms once signed
 ```
 
 ## Rules

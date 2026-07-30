@@ -111,8 +111,8 @@ Memories are durable knowledge, authored and signed like intents:
 ```bash
 atomic memory kinds                                        # Allowed kinds + when to use each
 atomic memory new --kind <kind> --text "..." --derived-from <urn>   # Create (canonical)
-atomic memory validate <id>                                # Gate
-atomic memory attest <id>                                  # Sign
+atomic memory attest <id>                                  # Gate and sign
+atomic memory validate <id>                                # Confirm it conforms once signed
 atomic memory list [-n <N>]                                # List — recent first, full ULID, kind/status/attested
 atomic memory show <id>                                    # Show a memory's content
 atomic memory write <name> [--type <t>]                    # Freeform write from stdin (raw escape hatch)
@@ -164,6 +164,19 @@ Write code and iterate. As each criterion's outcome holds, **verify** it (run
 the actual checks), then flip its `status=unmet` → `status=met` in the intent
 file with your **file-editing tool** (never bash, Python, or sed — that bypasses
 the vault), and `atomic vault sync`. Do not mark a criterion met speculatively.
+
+**Marking a criterion met takes three attributes, not one.** The gate rejects a
+checked box with nothing behind it, so set `verifiedBy` and `evidence` in the
+same edit:
+
+```markdown
+:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy="<who/what checked it>" evidence="<how it was checked>"}
+```
+
+`verifiedBy` names what did the checking (a DID, a test name, a person);
+`evidence` records how (a command that passed, a change urn, an observation).
+Flipping only `status=met` makes `atomic intent validate` fail with
+`a met acceptance criterion must carry verifiedBy and evidence`.
 
 You do **not** create or switch views, and you do **not** run `atomic add` or
 `atomic record` — the integration's hooks own all of that:
