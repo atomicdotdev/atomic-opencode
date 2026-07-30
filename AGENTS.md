@@ -58,6 +58,16 @@ acceptance-criterion `status=unmet` → `status=met` when its outcome holds — 
 `atomic vault sync`. Never edit the file with bash/Python/sed; that bypasses the
 vault.
 
+**A met criterion needs three attributes, not one.** Add `verifiedBy` and
+`evidence` in the same edit:
+
+```markdown
+:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy="<who/what checked it>" evidence="<how it was checked>"}
+```
+
+Setting only `status=met` fails with `a met acceptance criterion must carry
+verifiedBy and evidence`.
+
 ### 4. Validate, attest, and complete
 
 An intent is not done until it **conforms and is signed** — this is the gate
@@ -92,7 +102,7 @@ everything into `decision`. Classify each insight into one of the allowed kinds
 one memory per insight — or nothing. See the `/decision-record` skill for the
 rubric and source-linking table.
 
-For each insight: create, **validate and attest** (signed, like an intent), and
+For each insight: create, **attest and validate**, and
 link it to the **most specific** source it came from — the acceptance criterion,
 task, or todo — not just the intent:
 
@@ -101,15 +111,20 @@ ID=$(atomic memory new --kind <chosen-kind> \
   --text "<the insight, self-contained>" \
   --derived-from urn:atomic:ac:<UID>-ac-1,urn:atomic:intent:<UID> \
   --json | jq -r .id)
-atomic memory validate "$ID"
-atomic memory attest "$ID"
+atomic memory attest "$ID"      # signs it — fills attributedTo + proof
+atomic memory validate "$ID"    # confirm it conforms once signed
 ```
+
+**Attest first, then validate.** Validating a fresh memory exits 2 because
+`attributedTo` and `proof` are only added by `attest`.
 
 `--derived-from` takes canonical urns (comma-separated), each becoming a
 `wasDerivedFrom` edge in the graph: `urn:atomic:ac:<UID>-ac-N` (acceptance
-criterion), `urn:atomic:task:<UID>-N` (task), `urn:atomic:todo:<id>` (todo),
-`urn:atomic:intent:<UID>` (fallback). Read the `<UID>` and criterion/task ids
-straight from the intent file.
+criterion), `urn:atomic:task:<UID>-N` (task), and
+`urn:atomic:intent:<UID>` (fallback). For a todo, use
+`atomic query search "<todo text>"`, copy its exact KG id, and prefix it with
+`urn:atomic:`; todo nodes may be session-scoped. Read intent and criterion/task
+ids straight from the intent file.
 
 Record only genuine insights (chose X over Y and why, a corrective lesson, a
 constraint discovered, a durable preference/context) — **not** routine steps or
