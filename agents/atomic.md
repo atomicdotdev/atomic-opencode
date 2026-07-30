@@ -48,7 +48,7 @@ sed), and `atomic vault sync`.
 box with nothing behind it, so add `verifiedBy` and `evidence` in the same edit:
 
 ```markdown
-:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy=<who/what checked it> evidence="<how it was checked>"}
+:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy="<who/what checked it>" evidence="<how it was checked>"}
 ```
 
 Setting only `status=met` fails with `a met acceptance criterion must carry

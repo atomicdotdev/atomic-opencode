@@ -103,9 +103,7 @@ function doInstall() {
     );
     console.log(`  Target: ${TARGET}`);
     console.log();
-    console.log("Add this to your OpenCode config (opencode.json):");
-    console.log();
-    console.log('  { "plugin": ["atomic-opencode"] }');
+    console.log("Restart OpenCode; it will auto-discover the linked plugin.");
     console.log();
   }
 }

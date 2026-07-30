@@ -45,11 +45,11 @@ Record only durable, consequential insights:
 
 One memory per genuine insight — do not split one insight across several, or pad.
 
-## 3. Record each — `new → validate → attest`
+## 3. Record each — `new → attest → validate`
 
-For every insight, pick the kind and run the canonical lifecycle (the same one
-intents use), signed every time. Drive `new` non-interactively with `--text` so
-nothing blocks, and link it to the most specific source it came from:
+For every insight, pick the kind and run the signed memory lifecycle. Drive
+`new` non-interactively with `--text` so nothing blocks, and link it to the most
+specific source it came from:
 
 ```bash
 ID=$(atomic memory new --kind <chosen-kind> \
@@ -123,7 +123,7 @@ so their case is preserved as you wrote them.)
   new` — it writes to the vault database directly.
 - **Reuse, don't duplicate.** If an insight merely reaffirms an existing memory,
   skip it. Check with `atomic vault context "<topic>"` when unsure.
-- **Always attest.** Run `atomic memory validate` then `atomic memory attest`
+- **Always attest.** Run `atomic memory attest` then `atomic memory validate`
   after each `new`.
 - **Link the most specific source.** Always pass the intent urn, and add the
   acceptance-criterion, task, or todo urn when the insight maps to one. The more

@@ -111,8 +111,8 @@ Memories are durable knowledge, authored and signed like intents:
 ```bash
 atomic memory kinds                                        # Allowed kinds + when to use each
 atomic memory new --kind <kind> --text "..." --derived-from <urn>   # Create (canonical)
-atomic memory validate <id>                                # Gate
-atomic memory attest <id>                                  # Sign
+atomic memory attest <id>                                  # Gate and sign
+atomic memory validate <id>                                # Confirm it conforms once signed
 atomic memory list [-n <N>]                                # List — recent first, full ULID, kind/status/attested
 atomic memory show <id>                                    # Show a memory's content
 atomic memory write <name> [--type <t>]                    # Freeform write from stdin (raw escape hatch)
@@ -170,7 +170,7 @@ checked box with nothing behind it, so set `verifiedBy` and `evidence` in the
 same edit:
 
 ```markdown
-:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy=<who/what checked it> evidence="<how it was checked>"}
+:::acceptance-criterion{#<uid>-ac-1 status=met verifiedBy="<who/what checked it>" evidence="<how it was checked>"}
 ```
 
 `verifiedBy` names what did the checking (a DID, a test name, a person);
