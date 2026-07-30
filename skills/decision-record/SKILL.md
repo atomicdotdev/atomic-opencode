@@ -73,9 +73,9 @@ Repeat for each insight (e.g. one `decision`, then one `lesson`).
   *what failed · the takeaway*.
 - **`--about`** *(optional)* — module/domain urns the memory concerns.
 - **Always `attest`, then `validate`.** An unattested memory is unsigned and
-  untrusted — finish the lifecycle the same way you do for an intent. `attest`
-  gates before it signs; `validate` on an unsigned memory only ever reports the
-  two properties signing fills.
+  untrusted — finish both memory steps. `attest` gates before it signs;
+  `validate` on an unsigned memory only ever reports the two properties signing
+  fills.
 
 ## 4. Link it to where it came from (`--derived-from`)
 
@@ -91,25 +91,26 @@ walk *criterion → memory* or *todo → memory*.
 > link failed" when the link is fine. Never construct these ids: copy them from
 > `atomic query search "<term>"`, which prints the resolvable form.
 
-Copy the id **verbatim** from the intent file / your todo list (the `#…` on the
-directive), wrapped in the matching urn. For intents, acceptance criteria, and
-tasks the id is the intent's ULID (UPPERCASE) and the graph canonicalizes case,
-so verbatim is simplest. **Memory ids are the exception** — they are lowercase
-ULIDs and are *not* case-folded, so `urn:atomic:memory:<id>` must match the id
-exactly as `atomic memory list` prints it, or the edge silently points at a node
-that does not exist:
+Copy intent, acceptance-criterion, and task ids **verbatim** from the intent
+file, wrapped in the matching urn. Their id contains the intent's ULID
+(UPPERCASE), and the graph canonicalizes its case. For a todo, do not rebuild
+the KG id from the todo tool's short id: todo nodes may be scoped to their
+session. Find the todo with `atomic query search "<todo text>"`, copy the exact
+KG id it prints, and prefix that id with `urn:atomic:`. **Memory ids are another
+exception** — they are lowercase ULIDs and are *not* case-folded, so
+`urn:atomic:memory:<id>` must match the id exactly as `atomic memory list`
+prints it, or the edge silently points at a node that does not exist:
 
 | The insight came from… | Pass |
 |---|---|
 | an acceptance criterion (`:::acceptance-criterion{#<UID>-ac-1}`) | `urn:atomic:ac:<UID>-ac-1` |
 | a task (`:::task{#<UID>-1}`) | `urn:atomic:task:<UID>-1` |
-| a todo item (id `t2` in your todo tool) | `urn:atomic:todo:t2` |
+| a todo item | If search prints `session:<session-id>/todo:t2`, pass `urn:atomic:session:<session-id>/todo:t2` (copy the actual id; older indexes may print `todo:t2`) |
 | a prior memory | `urn:atomic:memory:<id>` |
 | nothing more specific | the intent: `urn:atomic:intent:<UID>` |
 
 Always include the intent as a fallback link, and add the criterion / task /
-todo when the insight maps to one. (`todo` ids are your own, not ULID-derived,
-so their case is preserved as you wrote them.)
+todo when the insight maps to one.
 
 ## Rules
 
