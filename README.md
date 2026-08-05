@@ -12,7 +12,7 @@ Automatic turn recording with AI provenance, intent tracking, and knowledge grap
 - **Every turn records with provenance** — model, vendor, session, turn number, timing
 - **Tool executions tracked** — reads, edits, bash calls captured in a causal decision graph
 - **Intent workflow** — agent prompt guides problem-first development with vault intents
-- **Skills on demand** — `@atomic-vault`, `@atomic-vcs`, and `@code-intelligence` loaded when needed
+- **Skills on demand** — `@atomic-vault`, `@decision-record`, `@atomic-vcs`, and `@code-intelligence` loaded when needed
 
 ## Install
 
@@ -57,11 +57,12 @@ opencode                 # start OpenCode — press Tab to switch to Atomic agen
 
 The Atomic agent:
 
-1. Creates an intent for each prompt (`atomic vault intent create`)
-2. Reframes your request as a problem statement with success criteria
-3. Writes the plan into the intent file before coding
-4. Executes the tasks
-5. Hooks automatically record with provenance when the turn ends
+1. Creates a directive-based intent for each prompt (`atomic intent new`)
+2. Reframes your request as a problem — a mandatory `:::why`, acceptance criteria, and tasks
+3. Fills the intent's directives before coding
+4. Executes the tasks, then validates and attests the intent (`atomic intent validate` → `atomic intent attest`)
+5. Records durable memories of the right kind (`atomic memory new --kind …`), attested and linked
+6. Hooks automatically record the code changes with provenance when the turn ends
 
 You never need to run `atomic add` or `atomic record` — the hooks handle it.
 
@@ -85,10 +86,11 @@ atomic agent attest
 | `plugins/atomic-hooks.ts` | OpenCode plugin — session lifecycle, turn recording, tool tracking |
 | `agents/atomic.md` | Agent prompt — intent-per-turn workflow |
 | `skills/atomic-vault/SKILL.md` | Vault reference (goals, intents, memory) |
+| `skills/decision-record/SKILL.md` | Durable memory classification and source-linking workflow |
 | `skills/atomic-vcs/SKILL.md` | Read-only VCS inspection (status, log, change, diff) |
 | `skills/code-intelligence/SKILL.md` | Knowledge graph query patterns |
 | `opencode.json` | Default permissions |
-| `install.js` | Links agent + skills into `~/.config/opencode/` |
+| `install.js` | Links agent, skills, plugin, and config into `~/.config/opencode/` |
 | `install.sh` | Development install (symlinks from local checkout) |
 
 ## Uninstall
