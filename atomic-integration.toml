@@ -8,21 +8,9 @@ atomic = ">=0.11.0"
 [skills-source]
 package = "atomic-skills"
 
-[[skill]]
-src = "skills/atomic-vault/SKILL.md"
-dst = "~/.config/opencode/skills/atomic-vault/SKILL.md"
-
-[[skill]]
-src = "skills/atomic-vcs/SKILL.md"
-dst = "~/.config/opencode/skills/atomic-vcs/SKILL.md"
-
-[[skill]]
-src = "skills/code-intelligence/SKILL.md"
-dst = "~/.config/opencode/skills/code-intelligence/SKILL.md"
-
-[[skill]]
-src = "skills/decision-record/SKILL.md"
-dst = "~/.config/opencode/skills/decision-record/SKILL.md"
+[skills]
+install = "all"
+dst_pattern = "~/.config/opencode/skills/{name}/SKILL.md"
 
 [[repo-file]]
 src = "AGENTS.md"
