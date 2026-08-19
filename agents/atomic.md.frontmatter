@@ -1,0 +1,9 @@
+---
+description: Intent-driven development with Atomic VCS. Converts each prompt into a problem statement, plans tasks, executes, and records with provenance.
+mode: primary
+permission:
+  edit: allow
+  bash: allow
+  skill:
+    "*": allow
+---

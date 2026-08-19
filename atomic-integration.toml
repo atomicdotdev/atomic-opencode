@@ -1,13 +1,25 @@
 schema = 1
 agent = "opencode"
-version = "1.1.0"
+version = "1.0.0"
 
 [requires]
 atomic = ">=0.11.0"
 
-[[file]]
-src = "agents/atomic.md"
-dst = "~/.config/opencode/agents/atomic.md"
+[skills-source]
+package = "atomic-skills"
+
+[skills]
+install = "all"
+dst_pattern = "~/.config/opencode/skills/{name}/SKILL.md"
+
+[[repo-file]]
+src = "AGENTS.md"
+dst = "AGENTS.md"
+
+[agent-definition]
+src = "agents/atomic.md.frontmatter"
+body_from = "atomic-skills:AGENTS.md"
+slot = "~/.config/opencode/agents/atomic.md"
 
 [[file]]
 src = "plugins/atomic-hooks.ts"
@@ -16,22 +28,6 @@ dst = "~/.config/opencode/plugins/atomic-hooks.ts"
 [[file]]
 src = "package.json"
 dst = "~/.config/opencode/package.json"
-
-[[file]]
-src = "skills/atomic-vault/SKILL.md"
-dst = "~/.config/opencode/skills/atomic-vault/SKILL.md"
-
-[[file]]
-src = "skills/code-intelligence/SKILL.md"
-dst = "~/.config/opencode/skills/code-intelligence/SKILL.md"
-
-[[file]]
-src = "skills/atomic-vcs/SKILL.md"
-dst = "~/.config/opencode/skills/atomic-vcs/SKILL.md"
-
-[[file]]
-src = "skills/decision-record/SKILL.md"
-dst = "~/.config/opencode/skills/decision-record/SKILL.md"
 
 # Registers the plugin (and default permissions) into the user's opencode.json
 # via a deep merge — existing config is preserved, never clobbered.
