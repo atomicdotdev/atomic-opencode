@@ -12,10 +12,6 @@ package = "atomic-skills"
 install = "all"
 dst_pattern = "~/.config/opencode/skills/{name}/SKILL.md"
 
-[[repo-file]]
-src = "AGENTS.md"
-dst = "AGENTS.md"
-
 [agent-definition]
 src = "agents/atomic.md.frontmatter"
 body_from = "atomic-skills:AGENTS.md"
