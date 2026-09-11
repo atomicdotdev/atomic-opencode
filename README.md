@@ -34,9 +34,6 @@ From a local checkout:
 git clone https://github.com/atomicdotdev/atomic-opencode
 cd atomic-opencode
 atomic agent enable --agent opencode --from .
-
-# or the legacy script path:
-./install.sh
 ```
 
 This symlinks everything into `~/.config/opencode/`. Edit files in the repo — changes apply immediately (restart OpenCode for plugin changes).
@@ -57,7 +54,7 @@ opencode                 # start OpenCode — press Tab to switch to Atomic agen
 
 The Atomic agent:
 
-1. Creates a directive-based intent for each prompt (`atomic intent new`)
+1. Reuses the assigned intent, or creates one per prompt (`atomic intent new`)
 2. Reframes your request as a problem — a mandatory `:::why`, acceptance criteria, and tasks
 3. Fills the intent's directives before coding
 4. Executes the tasks, then validates and attests the intent (`atomic intent validate` → `atomic intent attest`)
@@ -84,14 +81,12 @@ atomic agent attest
 | File | Purpose |
 |------|---------|
 | `plugins/atomic-hooks.ts` | OpenCode plugin — session lifecycle, turn recording, tool tracking |
-| `agents/atomic.md` | Agent prompt — intent-per-turn workflow |
+| `agents/atomic.md.frontmatter` | Agent frontmatter — the body is rendered from the atomic-skills `AGENTS.md` shared source at install time |
 | `skills/atomic-vault/SKILL.md` | Vault reference (goals, intents, memory) |
 | `skills/decision-record/SKILL.md` | Durable memory classification and source-linking workflow |
 | `skills/atomic-vcs/SKILL.md` | Read-only VCS inspection (status, log, change, diff) |
 | `skills/code-intelligence/SKILL.md` | Knowledge graph query patterns |
 | `opencode.json` | Default permissions |
-| `install.js` | Links agent, skills, plugin, and config into `~/.config/opencode/` |
-| `install.sh` | Development install (symlinks from local checkout) |
 
 ## Uninstall
 

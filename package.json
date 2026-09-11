@@ -20,16 +20,8 @@
     "plugins/",
     "agents/",
     "skills/",
-    "opencode.json",
-    "install.js",
-    "install.sh"
+    "opencode.json"
   ],
-  "bin": {
-    "atomic-opencode": "install.js"
-  },
-  "scripts": {
-    "postinstall": "node install.js --silent"
-  },
   "dependencies": {
     "@opencode-ai/plugin": "1.18.0"
   }
