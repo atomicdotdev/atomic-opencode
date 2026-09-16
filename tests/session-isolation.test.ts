@@ -21,6 +21,17 @@ async function fixture(
     nothrow: async () => {
       const payload = JSON.parse(values[0]),
         verb = values[1];
+      if (verb === "file-snapshot")
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            scope_version: 1,
+            view: "test",
+            files: {},
+            dirty: [],
+          }),
+        };
       calls.push({
         verb,
         payload,
@@ -103,6 +114,10 @@ describe("concurrent Atomic sessions", () => {
         "after-tool",
         "stop",
       ]);
+      expect(own[0].payload.workspace_session_id).toBe(
+        sid === "parent" ? undefined : "parent",
+      );
+      expect(own[0].payload.recording_scope).toBe("explicit-files-v1");
       expect(own[3].payload).toMatchObject({
         tool_input: { filePath: sid + ".txt" },
         tool_output: sid + " output",
@@ -128,6 +143,7 @@ describe("concurrent Atomic sessions", () => {
       if (verb === "session-start" && payload.session_id === "slow") await gate;
       return { exitCode: 0, stderr: "" };
     });
+    await f.prompt("fast");
     const starting = f.event("session.created", { sessionID: "slow" });
     const prompt = f.prompt("slow");
     await f.prompt("fast");

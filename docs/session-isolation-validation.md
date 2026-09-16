@@ -1,5 +1,10 @@
 # Concurrent session validation (2026-09-16)
 
+Follow-up: the shared-directory file-ownership limitation described below is
+addressed by the separate `fix/subagent-file-ownership` branch; see
+[file ownership](file-ownership-validation.md).
+
+
 Atomic intent `ATOM::vince::1` (`01M2NY9KRPQMD2GH15V2430NEN`) in the
 atomic-opencode project; view `fix/subagent-session-isolation`.
 Base: release commit `60132da85ed81e6a2a3ef438424e07a43aaf07dd` (includes #7).

@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs";
+import { FileOwnership, mayMutate } from "./file-ownership";
 
 /** Atomic lifecycle and provenance hooks, isolated and ordered per session. */
 export const AtomicHooksPlugin = async ({ directory, $ }) => {
@@ -19,6 +20,11 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     return {};
   }
 
+  const ownership = new FileOwnership(async (paths) => {
+    const result = await hook("", "file-snapshot", { paths });
+    return JSON.parse(String(result.stdout));
+  });
+  let workspaceSession: string | undefined;
   const sessions = new Map();
   function stateFor(sid) {
     if (!sessions.has(sid))
@@ -62,10 +68,11 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       throw new Error(
         `exit ${result.exitCode}: ${String(result.stderr).trim()}`,
       );
+    return result;
   }
   // Events can arrive while an earlier callback awaits I/O. Only callbacks
   // belonging to the same session wait on one another.
-  function enqueue(sid, operation, callback) {
+  function enqueue(sid, operation, callback, strict = false) {
     if (typeof sid !== "string" || !sid) return Promise.resolve();
     const state = stateFor(sid);
     const next = state.tail.then(async () => {
@@ -74,11 +81,19 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     state.tail = next.catch((error) =>
       logFailure(sid, operation, String(error)),
     );
-    return state.tail;
+    return strict ? next : state.tail;
   }
   async function start(sid, state) {
     if (!state.started) {
-      await hook(sid, "session-start", { source: "startup" });
+      await ownership.exclusive(async () => {
+        await ownership.check();
+        await hook(sid, "session-start", {
+          source: "startup",
+          recording_scope: "explicit-files-v1",
+          workspace_session_id: workspaceSession,
+        });
+        workspaceSession ??= sid;
+      });
       state.started = true;
     }
   }
@@ -111,6 +126,9 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       if (event.type === "message.part.updated") {
         const part = props.part;
         return enqueue(part?.sessionID, event.type, (state) => {
+          if (part.type === "tool" && part.state?.status === "error") {
+            return ownership.finish(part.sessionID, part.callID);
+          }
           if (part.type === "reasoning") {
             state.reasoning.set(part.id, {
               text: part.text ?? "",
@@ -174,26 +192,31 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
             totals.cost_usd += part.cost ?? 0;
             if (part.reason) totals.finish_reason = part.reason;
           }
+          await ownership.finishSession(sid);
           const turn = state.turns + 1;
-          await hook(sid, "stop", {
-            turn_number: turn,
-            model: state.model,
-            provider: state.provider,
-            turn_duration_ms:
-              state.turnStartTime != null
-                ? Date.now() - state.turnStartTime
+          await ownership.exclusive(async () => {
+            await hook(sid, "stop", {
+              record_files: ownership.manifest(sid),
+              turn_number: turn,
+              model: state.model,
+              provider: state.provider,
+              turn_duration_ms:
+                state.turnStartTime != null
+                  ? Date.now() - state.turnStartTime
+                  : undefined,
+              reasoning_blocks: reasoning_blocks.length
+                ? reasoning_blocks
                 : undefined,
-            reasoning_blocks: reasoning_blocks.length
-              ? reasoning_blocks
-              : undefined,
-            response,
-            ...(state.steps.size
-              ? {
-                  ...totals,
-                  cost_usd: totals.cost_usd || undefined,
-                  step_count: state.steps.size,
-                }
-              : {}),
+              response,
+              ...(state.steps.size
+                ? {
+                    ...totals,
+                    cost_usd: totals.cost_usd || undefined,
+                    step_count: state.steps.size,
+                  }
+                : {}),
+            });
+            ownership.published(sid);
           });
           state.turns = turn;
           state.active = false;
@@ -203,8 +226,14 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       if (event.type === "session.deleted") {
         const sid = props.sessionID ?? props.info?.id;
         return enqueue(sid, event.type, async (state) => {
+          await ownership.finishSession(sid);
           if (state.started)
-            await hook(sid, "session-end", { reason: "deleted" });
+            await ownership.exclusive(async () => {
+              await hook(sid, "session-end", {
+                reason: "deleted",
+                record_files: ownership.manifest(sid),
+              });
+            });
           state.closed = true;
           reset(state);
           sessions.delete(sid);
@@ -236,23 +265,35 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     },
     "tool.execute.before": async (input, output) => {
       const sid = input.sessionID;
-      return enqueue(sid, "before-tool", async (state) => {
-        await start(sid, state);
-        state.active = true;
-        const args = output.args || {};
-        state.tools.set(input.callID, { start: Date.now(), args });
-        await hook(sid, "before-tool", {
-          tool_name: input.tool,
-          tool_call_id: input.callID,
-          tool_input: args,
-        });
-      });
+      return enqueue(
+        sid,
+        "before-tool",
+        async (state) => {
+          await start(sid, state);
+          state.active = true;
+          if (mayMutate(input.tool)) await ownership.begin(sid, input.callID);
+          const args = output.args || {};
+          state.tools.set(input.callID, { start: Date.now(), args });
+          try {
+            await hook(sid, "before-tool", {
+              tool_name: input.tool,
+              tool_call_id: input.callID,
+              tool_input: args,
+            });
+          } catch (error) {
+            await ownership.finish(sid, input.callID);
+            throw error;
+          }
+        },
+        true,
+      );
     },
     "tool.execute.after": async (input, output) => {
       const sid = input.sessionID;
       return enqueue(sid, "after-tool", async (state) => {
         await start(sid, state);
         state.active = true;
+        await ownership.finish(sid, input.callID);
         const saved = state.tools.get(input.callID),
           args = saved?.args || {};
         const raw = output.output;
@@ -279,7 +320,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     },
     "shell.env": async (_input, output) => {
       output.env.ATOMIC_AGENT = "opencode";
-      output.env.ATOMIC_AGENT_VERSION = "1.2.0";
+      output.env.ATOMIC_AGENT_VERSION = "1.3.0";
     },
   };
 };
