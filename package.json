@@ -16,6 +16,9 @@
     "version-control"
   ],
   "main": "plugins/atomic-hooks.ts",
+  "scripts": {
+    "test": "bun test"
+  },
   "files": [
     "plugins/",
     "agents/",

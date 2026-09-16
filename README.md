@@ -98,6 +98,15 @@ Removes symlinks from `~/.config/opencode/`. Your OpenCode config and other plug
 
 ## Architecture
 
+Parent and subagent sessions keep separate tool arguments, reasoning, response
+text, model metadata and turn counters. Hook calls run in order within each
+session and wait for the CLI operation to complete; other sessions can continue
+concurrently. Hook command failures are logged with the session ID to
+`.atomic/hook-errors.log`.
+
+This isolates provenance events, not working directories. Agents editing the
+same files still need an appropriate workspace strategy.
+
 ```
 OpenCode session start
   │
@@ -116,6 +125,12 @@ OpenCode session start
   └── Session ends
       └── Plugin fires session-end → Rust creates attestation
 ```
+
+## Tests
+
+Run `bun test` for concurrent-session routing, hook ordering, Stop retry,
+duplicate-event and telemetry regressions. These tests mock the CLI boundary;
+end-to-end validation also requires OpenCode and an Atomic CLI build.
 
 ## License
 
