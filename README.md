@@ -8,7 +8,7 @@ Automatic turn recording with AI provenance, intent tracking, and knowledge grap
 
 ## What it does
 
-- **One working directory = one shared work view** — parent and subagent sessions keep separate changes and provenance within that view
+- **1 session = 1 view** — a draft view is created automatically when you start OpenCode
 - **Every turn records with provenance** — model, vendor, session, turn number, timing
 - **Tool executions tracked** — reads, edits, bash calls captured in a causal decision graph
 - **Intent workflow** — agent prompt guides problem-first development with vault intents
@@ -98,29 +98,6 @@ Removes symlinks from `~/.config/opencode/`. Your OpenCode config and other plug
 
 ## Architecture
 
-Parent and subagent sessions keep separate tool arguments, reasoning, response
-text, model metadata and turn counters. Hook calls run in order within each
-session and wait for the CLI operation to complete; other sessions can continue
-concurrently. Hook command failures are logged with the session ID to
-`.atomic/hook-errors.log`.
-
-Before and after tools that may write (including bash), the plugin compares
-Atomic file snapshots. Only those changed files enter that session's Stop
-manifest; existing unowned edits are left alone. Writes, session startup and
-Stop publication share a bounded workspace queue. Reads and model reasoning
-can overlap. A task waiting for children never holds this queue.
-
-A file edited by different sessions or changed after its captured fingerprint
-is not silently assigned: recording is rejected and the files remain on disk.
-This is attribution within one cooperating OpenCode instance, not filesystem
-sandboxing. Use separate workspaces for independent writers editing the same
-files, other OpenCode instances, or external processes.
-
-The plugin requires an Atomic CLI implementing `explicit-files-v1`
-(`atomic agent hooks opencode file-snapshot`). It refuses an older CLI instead
-of falling back to recording the entire directory. Install both changes together.
-See [validation and limits](docs/file-ownership-validation.md).
-
 ```
 OpenCode session start
   │
@@ -139,12 +116,6 @@ OpenCode session start
   └── Session ends
       └── Plugin fires session-end → Rust creates attestation
 ```
-
-## Tests
-
-Run `bun test` for concurrent-session routing, hook ordering, Stop retry,
-duplicate-event and telemetry regressions. These tests mock the CLI boundary;
-end-to-end validation also requires OpenCode and an Atomic CLI build.
 
 ## License
 
