@@ -42,6 +42,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
         text: new Map(),
         assistants: new Set(),
         steps: new Set(),
+        completedSteps: new Set(),
         finishes: new Map(),
       });
     return sessions.get(sid);
@@ -97,6 +98,20 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       state.started = true;
     }
   }
+  async function beginTurn(sid, state, payload = {}) {
+    await start(sid, state);
+    if (state.active) return;
+    // Programmatic/subagent and resumed turns need not emit chat.message.
+    // A tool or model step must activate the CLI turn before it can end.
+    // Do not claim activation until the foreground hook has succeeded.
+    await hook(sid, "user-prompt", {
+      model: state.model,
+      provider: state.provider,
+      ...payload,
+    });
+    state.active = true;
+    state.turnStartTime = Date.now();
+  }
   function reset(state) {
     state.reasoning.clear();
     state.text.clear();
@@ -125,7 +140,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       }
       if (event.type === "message.part.updated") {
         const part = props.part;
-        return enqueue(part?.sessionID, event.type, (state) => {
+        return enqueue(part?.sessionID, event.type, async (state) => {
           if (part.type === "tool" && part.state?.status === "error") {
             return ownership.finish(part.sessionID, part.callID);
           }
@@ -139,7 +154,9 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
             if (state.assistants.has(part.messageID))
               state.text.set(part.id, part.text ?? "");
           } else if (part.type === "step-start") {
-            state.active = true;
+            // OpenCode can resend the last step snapshot after idle.
+            if (state.completedSteps.has(part.id)) return;
+            await beginTurn(part.sessionID, state);
             state.steps.add(part.id);
           } else if (part.type === "step-finish") {
             // Updates are snapshots, not incremental token deltas.
@@ -220,6 +237,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           });
           state.turns = turn;
           state.active = false;
+          state.completedSteps = new Set(state.steps);
           reset(state);
         });
       }
@@ -243,10 +261,6 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     "chat.message": async (input, output) => {
       const sid = input.sessionID;
       return enqueue(sid, "chat.message", async (state) => {
-        await start(sid, state);
-        reset(state);
-        state.active = true;
-        state.turnStartTime = Date.now();
         if (input.model) {
           state.model = input.model.modelID;
           state.provider = input.model.providerID;
@@ -256,7 +270,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           .map((p) => p.text)
           .join("\n")
           .trim();
-        await hook(sid, "user-prompt", {
+        await beginTurn(sid, state, {
           prompt: prompt || undefined,
           model: state.model,
           provider: state.provider,
@@ -269,8 +283,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
         sid,
         "before-tool",
         async (state) => {
-          await start(sid, state);
-          state.active = true;
+          await beginTurn(sid, state);
           if (mayMutate(input.tool)) await ownership.begin(sid, input.callID);
           const args = output.args || {};
           state.tools.set(input.callID, { start: Date.now(), args });
@@ -291,8 +304,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     "tool.execute.after": async (input, output) => {
       const sid = input.sessionID;
       return enqueue(sid, "after-tool", async (state) => {
-        await start(sid, state);
-        state.active = true;
+        await beginTurn(sid, state);
         await ownership.finish(sid, input.callID);
         const saved = state.tools.get(input.callID),
           args = saved?.args || {};

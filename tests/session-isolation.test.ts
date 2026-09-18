@@ -58,6 +58,125 @@ async function fixture(
 }
 
 describe("concurrent Atomic sessions", () => {
+  test("resuming after a tool started still activates its turn", async () => {
+    const f = await fixture();
+    await f.plugin["tool.execute.after"](
+      { sessionID: "resumed", callID: "already-running", tool: "read" },
+      { output: "finished" },
+    );
+    await f.event("session.idle", { sessionID: "resumed" });
+    expect(f.calls.map((c) => c.verb)).toEqual([
+      "session-start",
+      "user-prompt",
+      "after-tool",
+      "stop",
+    ]);
+  });
+
+  test("programmatic tool turns activate the CLI without chat.message", async () => {
+    const f = await fixture();
+    for (const sid of ["parent", "child"]) {
+      for (let turn = 0; turn < 2; turn++) {
+        await f.plugin["tool.execute.before"](
+          { sessionID: sid, callID: `${sid}-${turn}`, tool: "read" },
+          { args: { filePath: "source.ts" } },
+        );
+        await f.event("session.idle", { sessionID: sid });
+        await f.event("session.idle", { sessionID: sid });
+      }
+      expect(
+        f.calls.filter((c) => c.payload.session_id === sid).map((c) => c.verb),
+      ).toEqual([
+        "session-start",
+        "user-prompt",
+        "before-tool",
+        "stop",
+        "user-prompt",
+        "before-tool",
+        "stop",
+      ]);
+    }
+  });
+
+  test("model steps activate read-only turns and ignore completed step snapshots", async () => {
+    const f = await fixture();
+    for (let turn = 0; turn < 2; turn++) {
+      const step = {
+        sessionID: "resumed",
+        id: `step-${turn}`,
+        type: "step-start",
+      };
+      // Metadata can arrive before the first step; activation must retain it.
+      await f.event("message.updated", {
+        info: { sessionID: "resumed", id: `answer-${turn}`, role: "assistant" },
+      });
+      await f.event("message.part.updated", { part: step });
+      await f.event("message.part.updated", { part: step });
+      await f.event("message.part.updated", {
+        part: {
+          sessionID: "resumed",
+          id: `text-${turn}`,
+          type: "text",
+          messageID: `answer-${turn}`,
+          text: `Answer ${turn}`,
+        },
+      });
+      await f.event("session.idle", { sessionID: "resumed" });
+      await f.event("message.part.updated", { part: step });
+      await f.event("session.idle", { sessionID: "resumed" });
+    }
+    expect(f.calls.filter((c) => c.verb === "user-prompt")).toHaveLength(2);
+    expect(
+      f.calls.filter((c) => c.verb === "stop").map((c) => c.payload.response),
+    ).toEqual(["Answer 0", "Answer 1"]);
+  });
+
+  test("late chat.message and multiple steps do not restart an active turn", async () => {
+    const f = await fixture();
+    await f.event("message.part.updated", {
+      part: { sessionID: "s", id: "first", type: "step-start" },
+    });
+    await f.event("message.part.updated", {
+      part: {
+        sessionID: "s",
+        id: "reason",
+        type: "reasoning",
+        text: "keep this",
+      },
+    });
+    await f.prompt("s");
+    await f.event("message.part.updated", {
+      part: { sessionID: "s", id: "second", type: "step-start" },
+    });
+    await f.event("session.idle", { sessionID: "s" });
+    expect(f.calls.filter((c) => c.verb === "user-prompt")).toHaveLength(1);
+    expect(f.calls.at(-1).payload).toMatchObject({
+      step_count: 2,
+      reasoning_blocks: [{ text: "keep this" }],
+    });
+  });
+
+  test("failed activation blocks a tool and can be retried", async () => {
+    let fail = true;
+    const f = await fixture(async (verb) => {
+      if (verb === "user-prompt" && fail)
+        return { exitCode: 1, stderr: "start unavailable" };
+      return { exitCode: 0, stderr: "" };
+    });
+    const tool = { sessionID: "s", callID: "read-1", tool: "read" };
+    await expect(
+      f.plugin["tool.execute.before"](tool, { args: {} }),
+    ).rejects.toThrow("start unavailable");
+    expect(f.calls.some((c) => c.verb === "before-tool")).toBe(false);
+    await f.event("session.idle", { sessionID: "s" });
+    expect(f.calls.some((c) => c.verb === "stop")).toBe(false);
+    fail = false;
+    await f.plugin["tool.execute.before"](tool, { args: {} });
+    await f.event("session.idle", { sessionID: "s" });
+    expect(f.calls.filter((c) => c.verb === "before-tool")).toHaveLength(1);
+    expect(f.calls.filter((c) => c.verb === "stop")).toHaveLength(1);
+  });
+
   test("interleaved parent/children keep tools, models, telemetry and Stops separate", async () => {
     const f = await fixture();
     const ids = ["parent", "child-a", "child-b"];
@@ -136,23 +255,34 @@ describe("concurrent Atomic sessions", () => {
 
   test("same-session callbacks await start while another session makes progress", async () => {
     let release!: () => void;
+    let entered!: () => void;
+    const startingSlow = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const f = await fixture(async (verb, payload) => {
-      if (verb === "session-start" && payload.session_id === "slow") await gate;
+      if (verb === "session-start" && payload.session_id === "slow") {
+        entered();
+        await gate;
+      }
       return { exitCode: 0, stderr: "" };
     });
     await f.prompt("fast");
     const starting = f.event("session.created", { sessionID: "slow" });
     const prompt = f.prompt("slow");
-    await f.prompt("fast");
+    await startingSlow;
+    await f.plugin["tool.execute.before"](
+      { sessionID: "fast", callID: "read", tool: "read" },
+      { args: {} },
+    );
     expect(
       f.calls.filter((c) => c.payload.session_id === "slow").map((c) => c.verb),
     ).toEqual(["session-start"]);
     expect(
       f.calls.some(
-        (c) => c.payload.session_id === "fast" && c.verb === "user-prompt",
+        (c) => c.payload.session_id === "fast" && c.verb === "before-tool",
       ),
     ).toBe(true);
     release();
