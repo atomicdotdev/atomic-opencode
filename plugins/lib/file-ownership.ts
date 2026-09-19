@@ -6,6 +6,8 @@ export class FileOwnership {
   private owners = new Map<string, string>();
   private files = new Map<string, Record<string, string | null>>();
   private failures = new Map<string, string>();
+  /** Files whose attribution failed, or null for sticky (view-drift) failures. */
+  private failedFiles = new Map<string, Set<string> | null>();
   private pending = new Map<
     string,
     { sid: string; before: any; release: () => void }
@@ -76,7 +78,14 @@ export class FileOwnership {
     if (this.pending.has(key)) throw new Error("duplicate mutation callback");
     const release = await this.acquire();
     try {
-      if (this.failures.has(sid)) throw new Error(this.failures.get(sid));
+      if (this.failures.has(sid)) {
+        if (await this.failureCleared(sid)) {
+          this.failures.delete(sid);
+          this.failedFiles.delete(sid);
+        } else {
+          throw new Error(this.failures.get(sid));
+        }
+      }
       const before = await this.take();
       this.pending.set(key, { sid, before, release });
     } catch (error) {
@@ -84,21 +93,43 @@ export class FileOwnership {
       throw error;
     }
   }
+  // A past ambiguity stops blocking once none of the files involved is still
+  // dirty — they were resolved, restored, or recorded by someone else. The
+  // failing tool's writes stay unattributed either way; blocking forever only
+  // guarantees a plugin restart, which loses every claim the session made.
+  // View drift is the exception: it invalidates the session's whole baseline,
+  // so it never auto-clears.
+  private async failureCleared(sid: string) {
+    const failed = this.failedFiles.get(sid);
+    if (failed === undefined) return true;
+    if (failed === null) return false;
+    if (failed.size === 0) return true;
+    try {
+      const snap = await this.take();
+      return ![...failed].some((p) => snap.dirty.includes(p));
+    } catch {
+      return false;
+    }
+  }
   async finish(sid: string, call: string) {
     const key = this.key(sid, call),
       pending = this.pending.get(key);
     if (!pending) return;
     this.pending.delete(key);
+    const failedPaths = new Set<string>();
+    let sticky = false;
     try {
       const before = pending.before;
       // Include prior dirty files even when a tool restores them to clean.
       const after = await this.snapshot([
         ...new Set(Object.keys(before.files)),
       ]);
-      if (after.scope_version !== 1 || after.view !== before.view)
+      if (after.scope_version !== 1 || after.view !== before.view) {
+        sticky = true;
         throw new Error(
           "working view changed during a tool; file ownership is ambiguous",
         );
+      }
       const files = this.files.get(sid) ?? Object.create(null);
       this.files.set(sid, files);
       for (const path of new Set([
@@ -106,13 +137,20 @@ export class FileOwnership {
         ...Object.keys(after.files),
       ])) {
         if (before.files[path] === after.files[path]) continue;
+        failedPaths.add(path);
         const owner = this.owners.get(path);
-        if (
-          (owner && owner !== sid) ||
-          (!owner && before.dirty.includes(path))
-        ) {
-          const reason = `Ambiguous file ownership: ${path} (${owner ?? "pre-existing edits"}); changes left on disk`;
-          if (owner) this.failures.set(owner, reason);
+        if (owner && owner !== sid) {
+          const reason = `Ambiguous file ownership: ${path} (${owner}); changes left on disk`;
+          this.failures.set(owner, reason);
+          this.failedFiles.set(owner, new Set([path]));
+          throw new Error(reason);
+        }
+        // A deletion is attributable to this tool even when the file carried
+        // unowned pre-existing edits: the edits are gone with the file, and
+        // refusing the claim would strand the deletion unrecorded forever.
+        const deleted = after.files[path] === null;
+        if (!owner && !deleted && before.dirty.includes(path)) {
+          const reason = `Ambiguous file ownership: ${path} (pre-existing edits); changes left on disk`;
           throw new Error(reason);
         }
         this.owners.set(path, sid);
@@ -120,6 +158,7 @@ export class FileOwnership {
       }
     } catch (error) {
       this.failures.set(sid, String(error));
+      this.failedFiles.set(sid, sticky ? null : failedPaths);
       throw error;
     } finally {
       pending.release();

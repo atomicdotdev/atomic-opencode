@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FileOwnership, mayMutate } from "../plugins/file-ownership";
+import { FileOwnership, mayMutate } from "../plugins/lib/file-ownership";
 
 function fixture(initial: Record<string, string | null> = {}) {
   let files = { ...initial };
@@ -21,6 +21,9 @@ function fixture(initial: Record<string, string | null> = {}) {
     put(p: string, v: string | null) {
       files[p] = v;
       dirty = [...new Set([...dirty, p])];
+    },
+    settle(p: string) {
+      dirty = dirty.filter((x) => x !== p);
     },
     clean() {
       dirty = [];
@@ -133,4 +136,50 @@ test("clean published files are not reclaimed by another session's read-only bas
   await f.owner.begin("b", "3");
   f.put("a.txt", "overwritten");
   await expect(f.owner.finish("b", "3")).rejects.toThrow("Ambiguous");
+});
+
+test("deleting a pre-existing dirty file is claimed, not refused", async () => {
+  const f = fixture({ human: "a" });
+  await f.owner.begin("a", "1");
+  f.put("human", null);
+  await f.owner.finish("a", "1");
+  expect(f.owner.manifest("a")).toEqual({ human: null });
+});
+
+test("deleting a foreign-owned file still blocks both sessions", async () => {
+  const f = fixture();
+  await f.owner.begin("a", "1");
+  f.put("same", "a");
+  await f.owner.finish("a", "1");
+  await f.owner.begin("b", "2");
+  f.put("same", null);
+  await expect(f.owner.finish("b", "2")).rejects.toThrow("Ambiguous");
+  expect(() => f.owner.manifest("a")).toThrow("Ambiguous");
+});
+
+test("ownership failure clears once the failing files settle", async () => {
+  const f = fixture({ human: "a" });
+  await f.owner.begin("a", "1");
+  f.put("human", "b");
+  await expect(f.owner.finish("a", "1")).rejects.toThrow("pre-existing");
+  expect(() => f.owner.manifest("a")).toThrow("pre-existing");
+  // Still blocked while the file stays dirty, even for a fresh tool.
+  await expect(f.owner.begin("a", "2")).rejects.toThrow("pre-existing");
+  // Resolution makes the file no longer dirty; the session recovers
+  // without a plugin restart.
+  f.settle("human");
+  await f.owner.begin("a", "2");
+  f.put("after", "ok");
+  await f.owner.finish("a", "2");
+  expect(f.owner.manifest("a")).toEqual({ after: "ok" });
+});
+
+test("view drift failure stays sticky across tools", async () => {
+  const f = fixture();
+  await f.owner.begin("a", "1");
+  f.view("another");
+  await expect(f.owner.finish("a", "1")).rejects.toThrow("view changed");
+  f.view("work");
+  f.clean();
+  await expect(f.owner.begin("a", "2")).rejects.toThrow("view changed");
 });
