@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import { FileOwnership, mayMutate } from "./file-ownership";
+import { FileOwnership, mayMutate } from "./lib/file-ownership";
 
 /** Atomic lifecycle and provenance hooks, isolated and ordered per session. */
 export const AtomicHooksPlugin = async ({ directory, $ }) => {
