@@ -45,6 +45,11 @@ Use one writing session at a time in a working directory. Recording can include
 other pending work in that directory; this rollback does not provide safe
 concurrent file attribution or repair previously lost changes.
 
+The CLI also has a known resume issue when the working directory has switched
+away from the conversation's view. Resuming that conversation can leave tools on
+the wrong view until Stop and record files absent from that working directory as
+deletions. This rollback does not fix that path; it still needs a CLI fix.
+
 ### Development install
 
 From a local checkout:
