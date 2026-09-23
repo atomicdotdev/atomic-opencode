@@ -22,10 +22,6 @@ src = "plugins/atomic-hooks.ts"
 dst = "~/.config/opencode/plugins/atomic-hooks.ts"
 
 [[file]]
-src = "plugins/lib/file-ownership.ts"
-dst = "~/.config/opencode/plugins/lib/file-ownership.ts"
-
-[[file]]
 src = "package.json"
 dst = "~/.config/opencode/package.json"
 

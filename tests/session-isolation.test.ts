@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AtomicHooksPlugin } from "../plugins/atomic-hooks";
@@ -21,17 +21,6 @@ async function fixture(
     nothrow: async () => {
       const payload = JSON.parse(values[0]),
         verb = values[1];
-      if (verb === "file-snapshot")
-        return {
-          exitCode: 0,
-          stderr: "",
-          stdout: JSON.stringify({
-            scope_version: 1,
-            view: "test",
-            files: {},
-            dirty: [],
-          }),
-        };
       calls.push({
         verb,
         payload,
@@ -58,6 +47,51 @@ async function fixture(
 }
 
 describe("concurrent Atomic sessions", () => {
+  for (const scenario of ["existing edits", "handoff after a recorded turn"]) {
+    test(`${scenario} do not block later bash commands or Stop`, async () => {
+      let file: string;
+      let recorded = "baseline\n";
+      // Model the CLI snapshot/record boundary so this also exercises the old
+      // ownership implementation when checking that the regression test fails.
+      const f = await fixture(async (verb) => {
+        if (verb === "file-snapshot") {
+          const contents = readFileSync(file, "utf8");
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              scope_version: 1,
+              view: "draft",
+              files: { "work.txt": contents },
+              dirty: contents === recorded ? [] : ["work.txt"],
+            }),
+          };
+        }
+        if (verb === "stop") recorded = readFileSync(file, "utf8");
+        return { exitCode: 0, stderr: "" };
+      });
+      file = join(f.root, "work.txt");
+      writeFileSync(file, scenario === "existing edits" ? "human draft\n" : recorded);
+      const ids = scenario === "existing edits" ? ["a"] : ["a", "b"];
+      for (const sid of ids) {
+        const edit = { sessionID: sid, callID: "edit", tool: "edit" };
+        await f.plugin["tool.execute.before"](edit, { args: { filePath: file } });
+        const contents = readFileSync(file, "utf8") + sid + " edit\n";
+        writeFileSync(file, contents);
+        await f.plugin["tool.execute.after"](edit, { output: "edited" });
+        for (const command of ["atomic status", "echo OK"]) {
+          const tool = { sessionID: sid, callID: command, tool: "bash" };
+          await f.plugin["tool.execute.before"](tool, { args: { command } });
+          await f.plugin["tool.execute.after"](tool, { output: "OK" });
+        }
+        await f.event("session.idle", { sessionID: sid });
+        expect(recorded).toBe(contents);
+        expect(f.calls.filter((c) => c.verb === "stop" && c.payload.session_id === sid)).toHaveLength(1);
+      }
+      expect(f.calls.some((c) => c.verb === "file-snapshot")).toBe(false);
+    });
+  }
+
   test("resuming after a tool started still activates its turn", async () => {
     const f = await fixture();
     await f.plugin["tool.execute.after"](
@@ -233,10 +267,9 @@ describe("concurrent Atomic sessions", () => {
         "after-tool",
         "stop",
       ]);
-      expect(own[0].payload.workspace_session_id).toBe(
-        sid === "parent" ? undefined : "parent",
-      );
-      expect(own[0].payload.recording_scope).toBe("explicit-files-v1");
+      expect(own[0].payload.workspace_session_id).toBeUndefined();
+      expect(own[0].payload.recording_scope).toBeUndefined();
+      expect(own[4].payload.record_files).toBeUndefined();
       expect(own[3].payload).toMatchObject({
         tool_input: { filePath: sid + ".txt" },
         tool_output: sid + " output",

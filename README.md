@@ -26,6 +26,30 @@ atomic agent enable --agent opencode
 
 The enable command syncs the package from Atomic storage and links the plugin, agent prompt, and skills into `~/.config/opencode/`. The plugin is plain TypeScript — no build step needed. Restart OpenCode after enabling.
 
+### Updating from the file-ownership version
+
+After installing this rollback, restart OpenCode and **start a new conversation**.
+Existing conversations may have `explicit_record_files` saved in their Atomic
+session. Resuming them still requires a file manifest that this rollback no
+longer sends; restarting OpenCode alone does not clear that requirement.
+Keep your working files and `.atomic` data. Do not delete session data or reset
+unrecorded changes to work around this.
+
+The rollback restores automatic recording of the working directory, including
+existing edits and files changed by shell commands. It removes the ownership
+checks that could block later commands and recording after an edit. New sessions
+no longer adopt the first session's view automatically. Session event routing
+and turn-start fixes remain in place.
+
+Use one writing session at a time in a working directory. Recording can include
+other pending work in that directory; this rollback does not provide safe
+concurrent file attribution or repair previously lost changes.
+
+The CLI also has a known resume issue when the working directory has switched
+away from the conversation's view. Resuming that conversation can leave tools on
+the wrong view until Stop and record files absent from that working directory as
+deletions. This rollback does not fix that path; it still needs a CLI fix.
+
 ### Development install
 
 From a local checkout:
