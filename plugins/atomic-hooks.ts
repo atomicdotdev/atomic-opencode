@@ -1,24 +1,35 @@
 import { appendFileSync } from "node:fs";
 
 /** Atomic lifecycle and provenance hooks, isolated and ordered per session. */
-export const AtomicHooksPlugin = async ({ directory, $ }) => {
+
+const ATOMIC_AGENT_VERSION = "1.3.0";
+
+function atomicEnabled(directory) {
   try {
     if (
       Bun.spawnSync(["atomic", "--version"], { stdout: "pipe", stderr: "pipe" })
         .exitCode !== 0
     )
-      return {};
+      return false;
     if (
       Bun.spawnSync(["test", "-d", `${directory}/.atomic`], {
         stdout: "pipe",
         stderr: "pipe",
       }).exitCode !== 0
     )
-      return {};
+      return false;
   } catch {
-    return {};
+    return false;
   }
+  return true;
+}
 
+/**
+ * Per-directory turn tracker shared by the OpenCode v1 and v2 plugin APIs.
+ * `invoke` runs one foreground `atomic agent hooks` command and resolves its
+ * exit status; the two hosts only differ in how they spawn that command.
+ */
+const createTracker = (directory, invoke) => {
   const sessions = new Map();
   function stateFor(sid) {
     if (!sessions.has(sid))
@@ -57,13 +68,11 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       timestamp: new Date().toISOString(),
     });
     // Wait for the operation itself, not merely its background launcher.
-    const result =
-      await $`echo ${json} | atomic agent hooks opencode ${verb} --foreground`.nothrow();
+    const result = await invoke(json, verb);
     if (result.exitCode !== 0)
       throw new Error(
         `exit ${result.exitCode}: ${String(result.stderr).trim()}`,
       );
-    return result;
   }
   // Events can arrive while an earlier callback awaits I/O. Only callbacks
   // belonging to the same session wait on one another.
@@ -107,6 +116,93 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     state.tools.clear();
     state.turnStartTime = null;
   }
+  async function stopTurn(sid, state) {
+    if (!state.active) return;
+    await start(sid, state);
+    const reasoning_blocks = [...state.reasoning.values()]
+      .map((b) => ({
+        text: (b.text || "").trim(),
+        duration_ms:
+          b.start != null && b.end != null
+            ? Math.max(0, b.end - b.start)
+            : undefined,
+      }))
+      .filter((b) => b.text.length > 0);
+    const response = [...state.text.values()]
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .pop();
+    const totals = {
+      input_tokens: 0,
+      output_tokens: 0,
+      reasoning_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      finish_reason: undefined,
+    };
+    for (const part of state.finishes.values()) {
+      const t = part.tokens ?? {};
+      totals.input_tokens += t.input ?? 0;
+      totals.output_tokens += t.output ?? 0;
+      totals.reasoning_tokens += t.reasoning ?? 0;
+      totals.cache_read_tokens += t.cache?.read ?? 0;
+      totals.cache_write_tokens += t.cache?.write ?? 0;
+      totals.cost_usd += part.cost ?? 0;
+      if (part.reason) totals.finish_reason = part.reason;
+    }
+    const turn = state.turns + 1;
+    await hook(sid, "stop", {
+      turn_number: turn,
+      model: state.model,
+      provider: state.provider,
+      turn_duration_ms:
+        state.turnStartTime != null
+          ? Date.now() - state.turnStartTime
+          : undefined,
+      reasoning_blocks: reasoning_blocks.length
+        ? reasoning_blocks
+        : undefined,
+      response,
+      ...(state.steps.size
+        ? {
+            ...totals,
+            cost_usd: totals.cost_usd || undefined,
+            step_count: state.steps.size,
+          }
+        : {}),
+    });
+    state.turns = turn;
+    state.active = false;
+    state.completedSteps = new Set(state.steps);
+    reset(state);
+  }
+  async function endSession(sid) {
+    const state = stateFor(sid);
+    if (state.started)
+      await hook(sid, "session-end", { reason: "deleted" });
+    state.closed = true;
+    reset(state);
+    sessions.delete(sid);
+  }
+  return {
+    stateFor,
+    hook,
+    enqueue,
+    start,
+    beginTurn,
+    stopTurn,
+    endSession,
+  };
+};
+
+/** OpenCode v1 plugin: hooks returned by value, invoked with a Bun `$` shell. */
+export const AtomicHooksPlugin = async ({ directory, $ }) => {
+  if (!atomicEnabled(directory)) return {};
+  const t = createTracker(directory, async (json, verb) =>
+    $`echo ${json} | atomic agent hooks opencode ${verb} --foreground`.nothrow(),
+  );
+  const { enqueue, start, beginTurn, stopTurn } = t;
   return {
     event: async ({ event }) => {
       const props = event.properties ?? {};
@@ -157,77 +253,11 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       }
       if (event.type === "session.idle") {
         const sid = props.sessionID;
-        return enqueue(sid, event.type, async (state) => {
-          if (!state.active) return;
-          await start(sid, state);
-          const reasoning_blocks = [...state.reasoning.values()]
-            .map((b) => ({
-              text: (b.text || "").trim(),
-              duration_ms:
-                b.start != null && b.end != null
-                  ? Math.max(0, b.end - b.start)
-                  : undefined,
-            }))
-            .filter((b) => b.text.length > 0);
-          const response = [...state.text.values()]
-            .map((t) => t.trim())
-            .filter(Boolean)
-            .pop();
-          const totals = {
-            input_tokens: 0,
-            output_tokens: 0,
-            reasoning_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            cost_usd: 0,
-            finish_reason: undefined,
-          };
-          for (const part of state.finishes.values()) {
-            const t = part.tokens ?? {};
-            totals.input_tokens += t.input ?? 0;
-            totals.output_tokens += t.output ?? 0;
-            totals.reasoning_tokens += t.reasoning ?? 0;
-            totals.cache_read_tokens += t.cache?.read ?? 0;
-            totals.cache_write_tokens += t.cache?.write ?? 0;
-            totals.cost_usd += part.cost ?? 0;
-            if (part.reason) totals.finish_reason = part.reason;
-          }
-          const turn = state.turns + 1;
-          await hook(sid, "stop", {
-            turn_number: turn,
-            model: state.model,
-            provider: state.provider,
-            turn_duration_ms:
-              state.turnStartTime != null
-                ? Date.now() - state.turnStartTime
-                : undefined,
-            reasoning_blocks: reasoning_blocks.length
-              ? reasoning_blocks
-              : undefined,
-            response,
-            ...(state.steps.size
-              ? {
-                  ...totals,
-                  cost_usd: totals.cost_usd || undefined,
-                  step_count: state.steps.size,
-                }
-              : {}),
-          });
-          state.turns = turn;
-          state.active = false;
-          state.completedSteps = new Set(state.steps);
-          reset(state);
-        });
+        return enqueue(sid, event.type, (state) => stopTurn(sid, state));
       }
       if (event.type === "session.deleted") {
         const sid = props.sessionID ?? props.info?.id;
-        return enqueue(sid, event.type, async (state) => {
-          if (state.started)
-            await hook(sid, "session-end", { reason: "deleted" });
-          state.closed = true;
-          reset(state);
-          sessions.delete(sid);
-        });
+        return enqueue(sid, event.type, () => t.endSession(sid));
       }
     },
     "chat.message": async (input, output) => {
@@ -258,7 +288,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           await beginTurn(sid, state);
           const args = output.args || {};
           state.tools.set(input.callID, { start: Date.now(), args });
-          await hook(sid, "before-tool", {
+          await t.hook(sid, "before-tool", {
             tool_name: input.tool,
             tool_call_id: input.callID,
             tool_input: args,
@@ -281,7 +311,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
               : raw
             : undefined;
         const exit = output.metadata?.exit;
-        await hook(sid, "after-tool", {
+        await t.hook(sid, "after-tool", {
           tool_name: input.tool,
           tool_call_id: input.callID,
           tool_input: args,
@@ -297,7 +327,234 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
     },
     "shell.env": async (_input, output) => {
       output.env.ATOMIC_AGENT = "opencode";
-      output.env.ATOMIC_AGENT_VERSION = "1.3.0";
+      output.env.ATOMIC_AGENT_VERSION = ATOMIC_AGENT_VERSION;
     },
   };
 };
+
+/** OpenCode v2 plugin: hooks registered on the context domains. */
+const spawnHook = (directory, json, verb) =>
+  new Promise(async (resolve) => {
+    const proc = Bun.spawn(
+      ["atomic", "agent", "hooks", "opencode", verb, "--foreground"],
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe", cwd: directory },
+    );
+    proc.stdin.write(json);
+    await proc.stdin.end();
+    const [exitCode, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text(),
+    ]);
+    resolve({ exitCode, stderr });
+  });
+
+const setupV2 = async (ctx, invoke) => {
+  const directory = ctx.location?.directory;
+  if (typeof directory !== "string" || !atomicEnabled(directory)) return;
+  const t = createTracker(
+    directory,
+    invoke ?? ((json, verb) => spawnHook(directory, json, verb)),
+  );
+  const { enqueue, stopTurn } = t;
+  // The public event stream may not be scoped to this plugin instance's
+  // location, so only track sessions that are known to belong to it.
+  const known = new Set();
+  const own = (sid) => typeof sid === "string" && !!sid && known.has(sid);
+
+  const userPrompt = (sid, payload) =>
+    enqueue(sid, "user-prompt", (state) => t.beginTurn(sid, state, payload));
+  const toolBefore = (sid, tool, callID, args) =>
+    enqueue(
+      sid,
+      "before-tool",
+      async (state) => {
+        await t.beginTurn(sid, state);
+        state.tools.set(callID, { start: Date.now(), args });
+        await t.hook(sid, "before-tool", {
+          tool_name: tool,
+          tool_call_id: callID,
+          tool_input: args,
+        });
+      },
+      true,
+    );
+  const toolAfter = (sid, tool, callID, args, toolOutput, status, exit) =>
+    enqueue(sid, "after-tool", async (state) => {
+      await t.beginTurn(sid, state);
+      const saved = state.tools.get(callID);
+      const truncated =
+        toolOutput != null
+          ? toolOutput.length > 2048
+            ? toolOutput.slice(0, 2048) + "…"
+            : toolOutput
+          : undefined;
+      await t.hook(sid, "after-tool", {
+        tool_name: tool,
+        tool_call_id: callID,
+        tool_input: args,
+        tool_output: truncated,
+        file_path: args?.filePath || args?.path,
+        exit_code: typeof exit === "number" ? exit : undefined,
+        status,
+        duration: saved ? Date.now() - saved.start : undefined,
+      });
+      state.tools.delete(callID);
+    });
+
+  try {
+    await ctx.session.hook("prompt", async (event) => {
+      const sid = event.sessionID;
+      known.add(sid);
+      let model, provider;
+      try {
+        const info = await ctx.session.get({ sessionID: sid });
+        model = info?.model?.id;
+        provider = info?.model?.providerID;
+      } catch {}
+      return userPrompt(sid, {
+        prompt: (event.prompt?.text ?? "").trim() || undefined,
+        ...(model ? { model, provider } : {}),
+      });
+    });
+    await ctx.tool.hook("execute.before", (event) => {
+      known.add(event.sessionID);
+      return toolBefore(
+        event.sessionID,
+        event.tool,
+        event.id,
+        event.input ?? {},
+      );
+    });
+    await ctx.tool.hook("execute.after", (event) => {
+      known.add(event.sessionID);
+      let toolOutput;
+      if (event.status === "error") toolOutput = event.error?.message;
+      else if (Array.isArray(event.result?.content))
+        toolOutput = event.result.content
+          .filter((c) => c?.type === "text")
+          .map((c) => c.text)
+          .join("\n");
+      const exit = event.result?.metadata?.exit;
+      return toolAfter(
+        event.sessionID,
+        event.tool,
+        event.id,
+        event.input ?? {},
+        toolOutput,
+        event.status ?? "completed",
+        exit,
+      );
+    });
+    await ctx.shell.hook("create.before", (event) => {
+      event.env.ATOMIC_AGENT = "opencode";
+      event.env.ATOMIC_AGENT_VERSION = ATOMIC_AGENT_VERSION;
+    });
+  } catch (error) {
+    try {
+      appendFileSync(
+        `${directory}/.atomic/hook-errors.log`,
+        `${new Date().toISOString()} v2-registration ${String(error)}\n`,
+      );
+    } catch {}
+    return;
+  }
+
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      for await (const ev of ctx.event.subscribe({
+        signal: controller.signal,
+      })) {
+        const data = ev.data ?? {};
+        const sid = data.sessionID;
+        const loc = ev.location?.directory;
+        if (loc !== undefined && loc !== directory) continue;
+        switch (ev.type) {
+          case "session.inbox.enqueued":
+          case "session.inbox.delivered":
+            if (loc === directory && sid) known.add(sid);
+            break;
+          case "session.execution.started":
+            if (own(sid))
+              enqueue(sid, ev.type, (state) => t.beginTurn(sid, state));
+            break;
+          case "session.execution.succeeded":
+          case "session.execution.failed":
+          case "session.execution.interrupted":
+          case "session.idle":
+            if (own(sid))
+              enqueue(sid, ev.type, (state) => stopTurn(sid, state));
+            break;
+          case "session.status":
+            if (own(sid) && data.status?.type === "idle")
+              enqueue(sid, ev.type, (state) => stopTurn(sid, state));
+            break;
+          case "session.step.started":
+            if (!own(sid)) break;
+            enqueue(sid, ev.type, async (state) => {
+              if (data.model?.id) state.model = data.model.id;
+              if (data.model?.providerID)
+                state.provider = data.model.providerID;
+              await t.beginTurn(sid, state);
+              state.steps.add(ev.id);
+            });
+            break;
+          case "session.step.ended":
+          case "session.step.failed":
+            if (own(sid))
+              enqueue(sid, ev.type, (state) => {
+                state.finishes.set(ev.id, {
+                  tokens: data.tokens,
+                  cost: data.cost,
+                  reason: data.finish,
+                });
+              });
+            break;
+          case "session.reasoning.started":
+            if (own(sid))
+              enqueue(sid, ev.type, (state) => {
+                state.reasoning.set(
+                  `${data.assistantMessageID}:${data.ordinal}`,
+                  { text: "", start: ev.created },
+                );
+              });
+            break;
+          case "session.reasoning.ended":
+            if (own(sid))
+              enqueue(sid, ev.type, (state) => {
+                const key = `${data.assistantMessageID}:${data.ordinal}`;
+                state.reasoning.set(key, {
+                  ...(state.reasoning.get(key) ?? { start: undefined }),
+                  text: data.text ?? "",
+                  end: ev.created,
+                });
+              });
+            break;
+          case "session.text.ended":
+            if (own(sid))
+              enqueue(sid, ev.type, (state) => {
+                state.text.set(
+                  `${data.assistantMessageID}:${data.ordinal}`,
+                  data.text ?? "",
+                );
+              });
+            break;
+          case "session.deleted":
+            if (own(sid)) enqueue(sid, ev.type, () => t.endSession(sid));
+            known.delete(sid);
+            break;
+        }
+      }
+    } catch {}
+  })();
+  return () => controller.abort();
+};
+
+/** Dual entrypoint: OpenCode v1 calls `server()`, v2 calls `setup()`. */
+export default {
+  id: "atomic-hooks",
+  server: AtomicHooksPlugin,
+  setup: setupV2,
+};
+
+export { setupV2 as AtomicHooksPluginV2 };
