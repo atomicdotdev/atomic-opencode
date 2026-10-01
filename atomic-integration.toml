@@ -1,6 +1,6 @@
 schema = 1
 agent = "opencode"
-version = "1.0.0"
+version = "1.1.0"
 
 [requires]
 atomic = ">=0.11.0"

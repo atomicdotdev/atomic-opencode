@@ -2,7 +2,8 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AtomicHooksPlugin } from "../plugins/atomic-hooks";
+import { AtomicHooksPlugin, AtomicHooksPluginV2 } from "../plugins/atomic-hooks";
+import pluginDefault from "../plugins/atomic-hooks";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -408,5 +409,279 @@ describe("concurrent Atomic sessions", () => {
     expect(
       f.calls.find((c) => c.verb === "session-end").payload.session_id,
     ).toBe("child");
+  });
+});
+
+describe("OpenCode v2 plugin", () => {
+  const until = async (cond, ms = 3000) => {
+    const end = Date.now() + ms;
+    while (!cond() && Date.now() < end)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(cond()).toBe(true);
+  };
+
+  function eventBus() {
+    const events: any[] = [];
+    let notify: (() => void) | undefined;
+    return {
+      push(event: any) {
+        events.push(event);
+        const wake = notify;
+        notify = undefined;
+        wake?.();
+      },
+      async *stream({ signal }: any) {
+        for (let i = 0; !signal?.aborted; ) {
+          if (i < events.length) {
+            yield events[i++];
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            notify = resolve;
+          });
+        }
+      },
+    };
+  }
+
+  async function fixtureV2(
+    dispatch = async (_verb: string, _payload: any) => ({ exitCode: 0, stderr: "" }),
+  ) {
+    spyOn(Bun, "spawnSync").mockReturnValue({ exitCode: 0 } as any);
+    const root = mkdtempSync(join(tmpdir(), "atomic-plugin-v2-test-"));
+    roots.push(root);
+    mkdirSync(join(root, ".atomic"));
+    const calls: any[] = [];
+    const invoke = async (json: string, verb: string) => {
+      const payload = JSON.parse(json);
+      calls.push({ verb, payload });
+      return dispatch(verb, payload);
+    };
+    const hooks: Record<string, any> = {};
+    const toolHooks: Record<string, any> = {};
+    const shell: any[] = [];
+    const bus = eventBus();
+    const ctx: any = {
+      location: { directory: root },
+      session: {
+        hook: async (name: string, cb: any) => {
+          hooks[name] = cb;
+          return { dispose: async () => {} };
+        },
+        get: async () => ({
+          model: { id: "selected-model", providerID: "selected-provider" },
+        }),
+      },
+      tool: {
+        hook: async (name: string, cb: any) => {
+          toolHooks[name] = cb;
+          return { dispose: async () => {} };
+        },
+      },
+      shell: {
+        hook: async (name: string, cb: any) => {
+          (hooks as any)[`shell.${name}`] = cb;
+          return { dispose: async () => {} };
+        },
+      },
+      event: { subscribe: (options: any) => bus.stream(options) },
+    };
+    const cleanup = await AtomicHooksPluginV2(ctx, invoke);
+    let eventId = 0;
+    return {
+      calls,
+      root,
+      bus,
+      cleanup,
+      hooks,
+      toolHooks,
+      prompt: (text: string, sid = "ses_1") =>
+        hooks.prompt({
+          sessionID: sid,
+          messageID: "msg_1",
+          prompt: { text },
+          delivery: "steer",
+        }),
+      event: (type: string, data: any, location?: any, created = 1000) =>
+        bus.push({
+          id: `evt_${++eventId}`,
+          type,
+          data,
+          location,
+          created,
+        }),
+    };
+  }
+
+  test("dual entrypoint exports v1 server and v2 setup", () => {
+    expect(pluginDefault.id).toBe("atomic-hooks");
+    expect(pluginDefault.server).toBe(AtomicHooksPlugin);
+    expect(typeof pluginDefault.setup).toBe("function");
+  });
+
+  test("records a full v2 turn with tools, reasoning, tokens and response", async () => {
+    const f = await fixtureV2();
+    await f.prompt("Create HELLO.md with hello");
+    f.event("session.inbox.enqueued", { sessionID: "ses_1" }, { directory: f.root });
+    f.event("session.execution.started", { sessionID: "ses_1" });
+    f.event(
+      "session.step.started",
+      {
+        sessionID: "ses_1",
+        assistantMessageID: "msg_a",
+        model: { id: "longcat", providerID: "opencode" },
+      },
+      { directory: f.root },
+    );
+    f.event(
+      "session.reasoning.started",
+      { sessionID: "ses_1", assistantMessageID: "msg_a", ordinal: 0 },
+      { directory: f.root },
+      2000,
+    );
+    f.event(
+      "session.reasoning.ended",
+      { sessionID: "ses_1", assistantMessageID: "msg_a", ordinal: 0, text: " think" },
+      { directory: f.root },
+      3000,
+    );
+    await f.toolHooks["execute.before"]({
+      sessionID: "ses_1",
+      tool: "write",
+      id: "call_1",
+      input: { filePath: "HELLO.md", content: "hello" },
+    });
+    await f.toolHooks["execute.after"]({
+      sessionID: "ses_1",
+      tool: "write",
+      id: "call_1",
+      input: { filePath: "HELLO.md" },
+      status: "completed",
+      result: {
+        content: [{ type: "text", text: "Created file successfully" }],
+        metadata: { exit: 0 },
+      },
+    });
+    f.event(
+      "session.step.ended",
+      {
+        sessionID: "ses_1",
+        finish: "tool-calls",
+        cost: 0.1,
+        tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 7, write: 3 } },
+      },
+      { directory: f.root },
+    );
+    f.event(
+      "session.step.started",
+      { sessionID: "ses_1", assistantMessageID: "msg_b", model: { id: "longcat", providerID: "opencode" } },
+      { directory: f.root },
+    );
+    f.event(
+      "session.text.ended",
+      { sessionID: "ses_1", assistantMessageID: "msg_b", ordinal: 0, text: "Created HELLO.md" },
+      { directory: f.root },
+    );
+    f.event(
+      "session.step.ended",
+      { sessionID: "ses_1", finish: "stop", cost: 0.2, tokens: { input: 20, output: 4, reasoning: 1, cache: { read: 0, write: 0 } } },
+      { directory: f.root },
+    );
+    f.event("session.execution.succeeded", { sessionID: "ses_1" });
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    expect(f.calls.map((c) => c.verb)).toEqual([
+      "session-start",
+      "user-prompt",
+      "before-tool",
+      "after-tool",
+      "stop",
+    ]);
+    expect(f.calls[1].payload).toMatchObject({
+      prompt: "Create HELLO.md with hello",
+      model: "selected-model",
+      provider: "selected-provider",
+    });
+    expect(f.calls[3].payload).toMatchObject({
+      tool_name: "write",
+      tool_output: "Created file successfully",
+      exit_code: 0,
+      file_path: "HELLO.md",
+      status: "completed",
+    });
+    expect(f.calls[4].payload).toMatchObject({
+      model: "longcat",
+      provider: "opencode",
+      input_tokens: 30,
+      output_tokens: 9,
+      reasoning_tokens: 3,
+      cache_read_tokens: 7,
+      cache_write_tokens: 3,
+      finish_reason: "stop",
+      step_count: 2,
+      response: "Created HELLO.md",
+      reasoning_blocks: [{ text: "think", duration_ms: 1000 }],
+    });
+  });
+
+  test("tool-only v2 turns activate and stop without a prompt hook", async () => {
+    const f = await fixtureV2();
+    f.event("session.inbox.enqueued", { sessionID: "ses_t" }, { directory: f.root });
+    await f.toolHooks["execute.after"]({
+      sessionID: "ses_t",
+      tool: "bash",
+      id: "call_9",
+      input: { command: "ls" },
+      status: "error",
+      error: { message: "command failed" },
+    });
+    f.event("session.execution.succeeded", { sessionID: "ses_t" });
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    expect(f.calls.map((c) => c.verb)).toEqual([
+      "session-start",
+      "user-prompt",
+      "after-tool",
+      "stop",
+    ]);
+    expect(f.calls[2].payload).toMatchObject({
+      tool_output: "command failed",
+      status: "error",
+    });
+  });
+
+  test("sessions from other locations are never recorded", async () => {
+    const f = await fixtureV2();
+    const foreign = { directory: "/somewhere/else" };
+    f.event("session.inbox.enqueued", { sessionID: "ses_far" }, foreign);
+    f.event("session.step.started", { sessionID: "ses_far", assistantMessageID: "m", model: { id: "x", providerID: "y" } }, foreign);
+    f.event("session.execution.succeeded", { sessionID: "ses_far" });
+    f.event("session.step.started", { sessionID: "ses_far", assistantMessageID: "m" }, undefined);
+    f.event("session.execution.succeeded", { sessionID: "ses_far" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("registers shell env and stops duplicate turn boundaries safely", async () => {
+    const f = await fixtureV2();
+    const env: any = {};
+    f.hooks["shell.create.before"]({ command: "atomic status", cwd: f.root, env });
+    expect(env).toMatchObject({
+      ATOMIC_AGENT: "opencode",
+      ATOMIC_AGENT_VERSION: "1.3.0",
+    });
+    f.event("session.inbox.enqueued", { sessionID: "ses_d" }, { directory: f.root });
+    await f.prompt("hi", "ses_d");
+    f.event("session.status", { sessionID: "ses_d", status: { type: "idle" } }, { directory: f.root });
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    f.event("session.execution.succeeded", { sessionID: "ses_d" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(f.calls.filter((c) => c.verb === "stop")).toHaveLength(1);
+    f.bus.push({
+      id: "evt_del",
+      type: "session.deleted",
+      data: { sessionID: "ses_d" },
+      location: { directory: f.root },
+    });
+    await until(() => f.calls.some((c) => c.verb === "session-end"));
+    await f.cleanup?.();
   });
 });

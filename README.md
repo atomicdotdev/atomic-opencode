@@ -66,7 +66,12 @@ This symlinks everything into `~/.config/opencode/`. Edit files in the repo — 
 
 - [Atomic VCS](https://atomic.dev) installed and on your PATH (`atomic --version`)
 - A project with an `.atomic/` repository (`atomic init`)
-- [OpenCode](https://opencode.ai) installed
+- [OpenCode](https://opencode.ai) installed — v1 (`1.18.29` or newer) or v2
+
+The plugin is a single entrypoint that supports both OpenCode generations: v1
+loads its `server()` export, v2 loads its `setup()` export. OpenCode v2 also
+auto-discovers `~/.config/opencode/plugins/*.ts`, so no config entry is needed
+there; v1 uses the `plugin` key that `atomic agent enable` writes.
 
 ## Usage
 
