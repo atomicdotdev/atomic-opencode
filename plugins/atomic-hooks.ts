@@ -335,8 +335,18 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
 /** OpenCode v2 plugin: hooks registered on the context domains. */
 const spawnHook = (directory, json, verb) =>
   new Promise(async (resolve) => {
+    // `opencode run --standalone` tears down the whole process tree the
+    // moment a turn completes; a foreground hook in flight would be killed
+    // with it (SIGTERM, exit 143). An ignored-signal disposition survives
+    // exec, so the recording already in progress always finishes. Graceful,
+    // long-lived sessions are unaffected.
     const proc = Bun.spawn(
-      ["atomic", "agent", "hooks", "opencode", verb, "--foreground"],
+      [
+        "sh",
+        "-c",
+        'trap "" TERM; exec atomic agent hooks opencode "$0" --foreground',
+        verb,
+      ],
       { stdin: "pipe", stdout: "pipe", stderr: "pipe", cwd: directory },
     );
     proc.stdin.write(json);
