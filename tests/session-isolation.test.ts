@@ -17,6 +17,9 @@ async function fixture(
   const root = mkdtempSync(join(tmpdir(), "atomic-plugin-test-"));
   roots.push(root);
   mkdirSync(join(root, ".atomic"));
+  // The plugin's repository probe mirrors `find_repository_root_from`: the
+  // graph database must exist, not just the `.atomic/` directory.
+  writeFileSync(join(root, ".atomic", "atomic.redb"), "");
   const calls: any[] = [];
   const $ = (strings, ...values) => ({
     nothrow: async () => {
@@ -451,6 +454,9 @@ describe("OpenCode v2 plugin", () => {
     const root = mkdtempSync(join(tmpdir(), "atomic-plugin-v2-test-"));
     roots.push(root);
     mkdirSync(join(root, ".atomic"));
+    // The plugin's repository probe mirrors `find_repository_root_from`:
+    // the graph database must exist, not just the `.atomic/` directory.
+    writeFileSync(join(root, ".atomic", "atomic.redb"), "");
     const calls: any[] = [];
     const invoke = async (json: string, verb: string) => {
       const payload = JSON.parse(json);
@@ -468,8 +474,11 @@ describe("OpenCode v2 plugin", () => {
           hooks[name] = cb;
           return { dispose: async () => {} };
         },
-        get: async () => ({
+        // Session.Info always carries location.directory (required field).
+        get: async ({ sessionID }: any) => ({
+          id: sessionID,
           model: { id: "selected-model", providerID: "selected-provider" },
+          location: { directory: root },
         }),
       },
       tool: {

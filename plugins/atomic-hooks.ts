@@ -1,35 +1,78 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, statSync } from "node:fs";
 
 /** Atomic lifecycle and provenance hooks, isolated and ordered per session. */
 
 const ATOMIC_AGENT_VERSION = "1.3.0";
 
-function atomicEnabled(directory) {
+/**
+ * Whether `directory` is an Atomic repository root, mirroring the CLI's
+ * `find_repository_root_from`: a bare `.atomic/` directory (e.g. `~/.atomic`
+ * holding only global configuration) is not a repository, so the graph
+ * database — or a linked-worktree/sandbox pointer — must be present.
+ * Filesystem-only, so it can be re-checked before every dispatch.
+ */
+function isFile(path) {
   try {
-    if (
-      Bun.spawnSync(["atomic", "--version"], { stdout: "pipe", stderr: "pipe" })
-        .exitCode !== 0
-    )
-      return false;
-    if (
-      Bun.spawnSync(["test", "-d", `${directory}/.atomic`], {
-        stdout: "pipe",
-        stderr: "pipe",
-      }).exitCode !== 0
-    )
-      return false;
+    return statSync(path).isFile();
   } catch {
     return false;
   }
-  return true;
+}
+
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function repositoryAt(directory) {
+  const dot = `${directory}/.atomic`;
+  if (isDirectory(dot)) {
+    // Linked worktrees keep a pointer to the common Atomic directory.
+    if (isFile(`${dot}/repository`)) return true;
+    // Canonical repository database (current and legacy layouts).
+    if (isFile(`${dot}/atomic.redb`)) return true;
+    if (isFile(`${dot}/pristine.redb`)) return true;
+  }
+  // A sandbox working tree points at the canonical repository.
+  return isFile(`${directory}/.atomic-sandbox`);
+}
+
+/** Memoized `atomic --version` probe; only reached once a repository exists. */
+let cliAvailableResult;
+function cliAvailable() {
+  if (cliAvailableResult === undefined) {
+    try {
+      cliAvailableResult =
+        Bun.spawnSync(["atomic", "--version"], {
+          stdout: "pipe",
+          stderr: "pipe",
+        }).exitCode === 0;
+    } catch {
+      cliAvailableResult = false;
+    }
+  }
+  return cliAvailableResult;
+}
+
+function atomicEnabled(directory) {
+  // Probe the filesystem first: no repository means no CLI spawn at all.
+  return repositoryAt(directory) && cliAvailable();
 }
 
 /**
  * Per-directory turn tracker shared by the OpenCode v1 and v2 plugin APIs.
  * `invoke` runs one foreground `atomic agent hooks` command and resolves its
  * exit status; the two hosts only differ in how they spawn that command.
+ * `enabled` is re-evaluated before every dispatch so a repository that is
+ * created or removed after setup is honored without a plugin reload.
+ * `authorize`, when present, is consulted immediately before every CLI
+ * invocation (inside the session's serialized queue) with a fresh answer;
+ * a session that no longer belongs to this directory never records here.
  */
-const createTracker = (directory, invoke) => {
+const createTracker = (directory, invoke, enabled, authorize) => {
   const sessions = new Map();
   function stateFor(sid) {
     if (!sessions.has(sid))
@@ -61,6 +104,20 @@ const createTracker = (directory, invoke) => {
     } catch {}
   }
   async function hook(sid, verb, payload = {}) {
+    // Re-validate before every dispatch: the repository may have appeared or
+    // disappeared since this instance loaded. When it is gone, skip the
+    // dispatch entirely instead of surfacing a CLI failure on every tool call.
+    // Returns false when skipped so callers can keep their pending state.
+    if (enabled && !enabled()) return false;
+    // Ownership is authoritative only at invocation time: this runs inside
+    // the session's serialized queue, so a callback that was queued while the
+    // session still lived here is re-checked after any wait, immediately
+    // before the CLI runs. Unresolvable sessions fail closed (skip).
+    // `session-end` is exempt: the session is already gone from the host by
+    // then, so its location cannot be resolved — finalizing a session this
+    // repo actually recorded (state.started) is the designed behavior.
+    if (authorize && verb !== "session-end" && !(await authorize(sid)))
+      return false;
     const json = JSON.stringify({
       ...payload,
       session_id: sid,
@@ -73,6 +130,7 @@ const createTracker = (directory, invoke) => {
       throw new Error(
         `exit ${result.exitCode}: ${String(result.stderr).trim()}`,
       );
+    return true;
   }
   // Events can arrive while an earlier callback awaits I/O. Only callbacks
   // belonging to the same session wait on one another.
@@ -89,8 +147,10 @@ const createTracker = (directory, invoke) => {
   }
   async function start(sid, state) {
     if (!state.started) {
-      await hook(sid, "session-start", { source: "startup" });
-      state.started = true;
+      // Only a dispatched session-start marks the session started: when the
+      // repository is absent the dispatch is skipped, so a repository that
+      // appears later still receives its startup dispatch.
+      state.started = await hook(sid, "session-start", { source: "startup" });
     }
   }
   async function beginTurn(sid, state, payload = {}) {
@@ -98,12 +158,15 @@ const createTracker = (directory, invoke) => {
     if (state.active) return;
     // Programmatic/subagent and resumed turns need not emit chat.message.
     // A tool or model step must activate the CLI turn before it can end.
-    // Do not claim activation until the foreground hook has succeeded.
-    await hook(sid, "user-prompt", {
+    // Do not claim activation until the foreground hook has succeeded — or,
+    // when the repository is absent, keep the turn unclaimed so dispatch
+    // resumes cleanly once a repository exists.
+    if (!(await hook(sid, "user-prompt", {
       model: state.model,
       provider: state.provider,
       ...payload,
-    });
+    })))
+      return;
     state.active = true;
     state.turnStartTime = Date.now();
   }
@@ -152,7 +215,7 @@ const createTracker = (directory, invoke) => {
       if (part.reason) totals.finish_reason = part.reason;
     }
     const turn = state.turns + 1;
-    await hook(sid, "stop", {
+    const dispatched = await hook(sid, "stop", {
       turn_number: turn,
       model: state.model,
       provider: state.provider,
@@ -172,6 +235,10 @@ const createTracker = (directory, invoke) => {
           }
         : {}),
     });
+    // A skipped dispatch (no repository) retains the finished turn exactly
+    // like a failed one, so a later attempt records it once the repository
+    // exists again.
+    if (dispatched === false) return;
     state.turns = turn;
     state.active = false;
     state.completedSteps = new Set(state.steps);
@@ -198,9 +265,16 @@ const createTracker = (directory, invoke) => {
 
 /** OpenCode v1 plugin: hooks returned by value, invoked with a Bun `$` shell. */
 export const AtomicHooksPlugin = async ({ directory, $ }) => {
-  if (!atomicEnabled(directory)) return {};
-  const t = createTracker(directory, async (json, verb) =>
-    $`echo ${json} | atomic agent hooks opencode ${verb} --foreground`.nothrow(),
+  if (typeof directory !== "string") return {};
+  // Hooks are always registered; each dispatch re-checks repository presence
+  // so a repository created after load is picked up without a restart, and a
+  // missing repository makes every hook a no-op (no CLI spawn, no failures).
+  const enabled = () => atomicEnabled(directory);
+  const t = createTracker(
+    directory,
+    async (json, verb) =>
+      $`echo ${json} | atomic agent hooks opencode ${verb} --foreground`.nothrow(),
+    enabled,
   );
   const { enqueue, start, beginTurn, stopTurn } = t;
   return {
@@ -326,6 +400,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       });
     },
     "shell.env": async (_input, output) => {
+      if (!enabled()) return;
       output.env.ATOMIC_AGENT = "opencode";
       output.env.ATOMIC_AGENT_VERSION = ATOMIC_AGENT_VERSION;
     },
@@ -340,17 +415,24 @@ const spawnHook = (directory, json, verb) =>
     // with it (SIGTERM, exit 143). An ignored-signal disposition survives
     // exec, so the recording already in progress always finishes. Graceful,
     // long-lived sessions are unaffected.
-    const proc = Bun.spawn(
-      [
-        "sh",
-        "-c",
-        'trap "" TERM; exec atomic agent hooks opencode "$0" --foreground',
-        verb,
-      ],
-      { stdin: "pipe", stdout: "pipe", stderr: "pipe", cwd: directory },
-    );
-    proc.stdin.write(json);
-    await proc.stdin.end();
+    let proc;
+    try {
+      proc = Bun.spawn(
+        [
+          "sh",
+          "-c",
+          'trap "" TERM; exec atomic agent hooks opencode "$0" --foreground',
+          verb,
+        ],
+        { stdin: "pipe", stdout: "pipe", stderr: "pipe", cwd: directory },
+      );
+      proc.stdin.write(json);
+      await proc.stdin.end();
+    } catch (error) {
+      // A failed spawn must resolve, never reject or hang the dispatcher.
+      resolve({ exitCode: 127, stderr: String(error) });
+      return;
+    }
     const [exitCode, stderr] = await Promise.all([
       proc.exited,
       new Response(proc.stderr).text(),
@@ -360,14 +442,41 @@ const spawnHook = (directory, json, verb) =>
 
 const setupV2 = async (ctx, invoke) => {
   const directory = ctx.location?.directory;
-  if (typeof directory !== "string" || !atomicEnabled(directory)) return;
+  // Always register the hooks: one plugin instance loads per location, and a
+  // repository that appears later must start recording without a reload. Each
+  // dispatch re-checks repository presence, so a location with no Atomic
+  // repository stays a pure no-op — no CLI spawn, no hook failures.
+  if (typeof directory !== "string") return;
+  const enabled = () => atomicEnabled(directory);
+  // Domain hooks (prompt, tool execution) fire for every session the server
+  // runs, not only sessions at this instance's location. Ownership is
+  // resolved FRESH from Session.Info.location on every dispatch (passed to
+  // the tracker as `authorize`) — never from a cache and never from a
+  // fallback: a session that moved, or whose location cannot be resolved,
+  // must never be recorded into this location's repository. Model/provider
+  // metadata fetched alongside is presentation data, not ownership.
+  const sessionLocation = async (sid) => {
+    if (typeof sid !== "string" || !sid) return undefined;
+    try {
+      const info = await ctx.session.get({ sessionID: sid });
+      return info?.location?.directory;
+    } catch {
+      return undefined;
+    }
+  };
+  const authorize = async (sid) => (await sessionLocation(sid)) === directory;
   const t = createTracker(
     directory,
     invoke ?? ((json, verb) => spawnHook(directory, json, verb)),
+    enabled,
+    authorize,
   );
   const { enqueue, stopTurn } = t;
   // The public event stream may not be scoped to this plugin instance's
-  // location, so only track sessions that are known to belong to it.
+  // location, so only track sessions that are known to belong to it. `known`
+  // is a non-authoritative prefilter: every CLI dispatch re-authorizes with
+  // a fresh session location, so stale entries can queue telemetry but can
+  // never write a foreign session into this repository.
   const known = new Set();
   const own = (sid) => typeof sid === "string" && !!sid && known.has(sid);
 
@@ -414,13 +523,19 @@ const setupV2 = async (ctx, invoke) => {
   try {
     await ctx.session.hook("prompt", async (event) => {
       const sid = event.sessionID;
-      known.add(sid);
-      let model, provider;
+      let model, provider, location;
       try {
         const info = await ctx.session.get({ sessionID: sid });
         model = info?.model?.id;
         provider = info?.model?.providerID;
+        location = info?.location?.directory;
       } catch {}
+      // Prefilter only (this fetch also supplies model metadata): the queued
+      // dispatch itself re-authorizes ownership immediately before the CLI
+      // runs. Sessions at other locations — or unresolvable ones — never
+      // reach a dispatch.
+      if (location !== directory) return;
+      known.add(sid);
       return userPrompt(sid, {
         prompt: (event.prompt?.text ?? "").trim() || undefined,
         ...(model ? { model, provider } : {}),
@@ -428,6 +543,8 @@ const setupV2 = async (ctx, invoke) => {
     });
     await ctx.tool.hook("execute.before", (event) => {
       known.add(event.sessionID);
+      // Ownership is not decided here: the queued callback re-authorizes
+      // immediately before the CLI invocation (see createTracker).
       return toolBefore(
         event.sessionID,
         event.tool,
@@ -456,6 +573,17 @@ const setupV2 = async (ctx, invoke) => {
       );
     });
     await ctx.shell.hook("create.before", (event) => {
+      if (!enabled()) return;
+      // ShellCreateBefore carries no session or location field — its only
+      // per-event evidence is the shell's `cwd`. Inject the agent
+      // environment only for shells rooted at this instance's directory so
+      // other locations' shells receive no foreign env.
+      const cwd = event.cwd;
+      if (
+        typeof cwd !== "string" ||
+        (cwd !== directory && !cwd.startsWith(`${directory}/`))
+      )
+        return;
       event.env.ATOMIC_AGENT = "opencode";
       event.env.ATOMIC_AGENT_VERSION = ATOMIC_AGENT_VERSION;
     });
