@@ -684,4 +684,60 @@ describe("OpenCode v2 plugin", () => {
     await until(() => f.calls.some((c) => c.verb === "session-end"));
     await f.cleanup?.();
   });
+
+  test("started sessions expose ATOMIC_SESSION_ID to shells", async () => {
+    const f = await fixtureV2();
+    await f.prompt("bind", "ses_bind");
+    const env: any = {};
+    f.hooks["shell.create.before"]({
+      command: "atomic intent update DEMO::you::1 --status in_progress",
+      cwd: f.root,
+      sessionID: "ses_bind",
+      env,
+    });
+    expect(env.ATOMIC_SESSION_ID).toBe("ses_bind");
+    const foreign: any = {};
+    f.hooks["shell.create.before"]({
+      command: "ls",
+      cwd: f.root,
+      sessionID: "ses_elsewhere",
+      env: foreign,
+    });
+    expect(foreign.ATOMIC_SESSION_ID).toBeUndefined();
+    expect(foreign.ATOMIC_AGENT).toBe("opencode");
+    await f.cleanup?.();
+  });
+});
+
+describe("work-start binding context", () => {
+  test("v1 started sessions expose ATOMIC_SESSION_ID to shells", async () => {
+    const f = await fixture();
+    await f.prompt("bind");
+    const env: any = {};
+    await f.plugin["shell.env"](
+      { cwd: f.root, sessionID: "bind" },
+      { env },
+    );
+    expect(env).toMatchObject({
+      ATOMIC_AGENT: "opencode",
+      ATOMIC_SESSION_ID: "bind",
+    });
+  });
+
+  test("v1 unstarted sessions and terminal shells get no session id", async () => {
+    const f = await fixture();
+    const unknown: any = {};
+    await f.plugin["shell.env"](
+      { cwd: f.root, sessionID: "never-started" },
+      { env: unknown },
+    );
+    expect(unknown.ATOMIC_AGENT).toBe("opencode");
+    expect(unknown.ATOMIC_SESSION_ID).toBeUndefined();
+    const terminal: any = {};
+    await f.plugin["shell.env"]({ cwd: f.root }, { env: terminal });
+    expect(terminal.ATOMIC_AGENT).toBe("opencode");
+    expect(terminal.ATOMIC_SESSION_ID).toBeUndefined();
+    // The read-only lookup must not materialize state for an unknown session.
+    expect(f.calls.filter((c) => c.payload.session_id === "never-started")).toHaveLength(0);
+  });
 });
