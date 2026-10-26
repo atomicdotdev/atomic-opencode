@@ -92,6 +92,19 @@ The Atomic agent:
 
 You never need to run `atomic add` or `atomic record` — the hooks handle it.
 
+### Event timestamps
+
+Hook payloads carry RFC-3339 timestamps with millisecond precision. The plugin
+forwards OpenCode's native event creation time (and v1 session/message creation
+time) when available. Prompt/tool callbacks without a native timestamp use receipt
+time captured before queueing or asynchronous lookups, not CLI dispatch time.
+Missing or invalid native times also fall back to callback receipt time.
+Turn/tool durations use these captured times; a retried Stop retains its original
+timestamp and duration. Negative durations caused by clock skew are clamped to zero.
+
+Atomic's OpenCode adapter must preserve the supplied timestamp for this source
+time to reach the provenance journal. Older adapters instead record receipt time.
+
 ## Viewing provenance
 
 ```bash
