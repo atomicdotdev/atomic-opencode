@@ -4,6 +4,17 @@ import { appendFileSync } from "node:fs";
 
 const ATOMIC_AGENT_VERSION = "1.3.0";
 
+// OpenCode event/message times are epoch milliseconds. Hooks without a source
+// time use callback receipt time, captured before any queue or async lookup.
+function eventTimestamp(value?) {
+  const date = new Date(
+    typeof value === "number" || typeof value === "string" ? value : Date.now(),
+  );
+  return Number.isFinite(date.getTime())
+    ? date.toISOString()
+    : new Date(Date.now()).toISOString();
+}
+
 function atomicEnabled(directory) {
   try {
     if (
@@ -42,6 +53,7 @@ const createTracker = (directory, invoke) => {
         provider: null,
         turns: 0,
         turnStartTime: null,
+        stopTimestamp: null,
         tools: new Map(),
         reasoning: new Map(),
         text: new Map(),
@@ -60,12 +72,12 @@ const createTracker = (directory, invoke) => {
       );
     } catch {}
   }
-  async function hook(sid, verb, payload = {}) {
+  async function hook(sid, verb, payload = {}, timestamp = eventTimestamp()) {
     const json = JSON.stringify({
       ...payload,
       session_id: sid,
       cwd: directory,
-      timestamp: new Date().toISOString(),
+      timestamp,
     });
     // Wait for the operation itself, not merely its background launcher.
     const result = await invoke(json, verb);
@@ -76,36 +88,38 @@ const createTracker = (directory, invoke) => {
   }
   // Events can arrive while an earlier callback awaits I/O. Only callbacks
   // belonging to the same session wait on one another.
-  function enqueue(sid, operation, callback, strict = false) {
+  function enqueue(sid, operation, callback, strict = false, timestamp?) {
     if (typeof sid !== "string" || !sid) return Promise.resolve();
+    const capturedTimestamp = eventTimestamp(timestamp);
     const state = stateFor(sid);
     const next = state.tail.then(async () => {
-      if (!state.closed) await callback(state);
+      if (!state.closed) await callback(state, capturedTimestamp);
     });
     state.tail = next.catch((error) =>
       logFailure(sid, operation, String(error)),
     );
     return strict ? next : state.tail;
   }
-  async function start(sid, state) {
+  async function start(sid, state, timestamp) {
     if (!state.started) {
-      await hook(sid, "session-start", { source: "startup" });
+      await hook(sid, "session-start", { source: "startup" }, timestamp);
       state.started = true;
     }
   }
-  async function beginTurn(sid, state, payload = {}) {
-    await start(sid, state);
+  async function beginTurn(sid, state, payload = {}, timestamp) {
+    await start(sid, state, timestamp);
     if (state.active) return;
     // Programmatic/subagent and resumed turns need not emit chat.message.
     // A tool or model step must activate the CLI turn before it can end.
     // Do not claim activation until the foreground hook has succeeded.
-    await hook(sid, "user-prompt", {
-      model: state.model,
-      provider: state.provider,
-      ...payload,
-    });
+    await hook(
+      sid,
+      "user-prompt",
+      { model: state.model, provider: state.provider, ...payload },
+      timestamp,
+    );
     state.active = true;
-    state.turnStartTime = Date.now();
+    state.turnStartTime = Date.parse(timestamp);
   }
   function reset(state) {
     state.reasoning.clear();
@@ -115,10 +129,13 @@ const createTracker = (directory, invoke) => {
     state.finishes.clear();
     state.tools.clear();
     state.turnStartTime = null;
+    state.stopTimestamp = null;
   }
-  async function stopTurn(sid, state) {
+  async function stopTurn(sid, state, timestamp) {
     if (!state.active) return;
-    await start(sid, state);
+    await start(sid, state, timestamp);
+    // A failed Stop retries the same turn boundary, not a later timestamp.
+    state.stopTimestamp ??= timestamp;
     const reasoning_blocks = [...state.reasoning.values()]
       .map((b) => ({
         text: (b.text || "").trim(),
@@ -158,7 +175,7 @@ const createTracker = (directory, invoke) => {
       provider: state.provider,
       turn_duration_ms:
         state.turnStartTime != null
-          ? Date.now() - state.turnStartTime
+          ? Math.max(0, Date.parse(state.stopTimestamp) - state.turnStartTime)
           : undefined,
       reasoning_blocks: reasoning_blocks.length
         ? reasoning_blocks
@@ -171,16 +188,16 @@ const createTracker = (directory, invoke) => {
             step_count: state.steps.size,
           }
         : {}),
-    });
+    }, state.stopTimestamp);
     state.turns = turn;
     state.active = false;
     state.completedSteps = new Set(state.steps);
     reset(state);
   }
-  async function endSession(sid) {
+  async function endSession(sid, timestamp) {
     const state = stateFor(sid);
     if (state.started)
-      await hook(sid, "session-end", { reason: "deleted" });
+      await hook(sid, "session-end", { reason: "deleted" }, timestamp);
     state.closed = true;
     reset(state);
     sessions.delete(sid);
@@ -208,7 +225,13 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       const props = event.properties ?? {};
       if (event.type === "session.created") {
         const sid = props.sessionID ?? props.info?.id;
-        return enqueue(sid, event.type, (state) => start(sid, state));
+        return enqueue(
+          sid,
+          event.type,
+          (state, timestamp) => start(sid, state, timestamp),
+          false,
+          props.info?.time?.created,
+        );
       }
       if (event.type === "message.updated") {
         const info = props.info;
@@ -222,7 +245,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       }
       if (event.type === "message.part.updated") {
         const part = props.part;
-        return enqueue(part?.sessionID, event.type, async (state) => {
+        return enqueue(part?.sessionID, event.type, async (state, timestamp) => {
           if (part.type === "reasoning") {
             state.reasoning.set(part.id, {
               text: part.text ?? "",
@@ -235,7 +258,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           } else if (part.type === "step-start") {
             // OpenCode can resend the last step snapshot after idle.
             if (state.completedSteps.has(part.id)) return;
-            await beginTurn(part.sessionID, state);
+            await beginTurn(part.sessionID, state, {}, timestamp);
             state.steps.add(part.id);
           } else if (part.type === "step-finish") {
             // Updates are snapshots, not incremental token deltas.
@@ -253,16 +276,20 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
       }
       if (event.type === "session.idle") {
         const sid = props.sessionID;
-        return enqueue(sid, event.type, (state) => stopTurn(sid, state));
+        return enqueue(sid, event.type, (state, timestamp) =>
+          stopTurn(sid, state, timestamp),
+        );
       }
       if (event.type === "session.deleted") {
         const sid = props.sessionID ?? props.info?.id;
-        return enqueue(sid, event.type, () => t.endSession(sid));
+        return enqueue(sid, event.type, (_state, timestamp) =>
+          t.endSession(sid, timestamp),
+        );
       }
     },
     "chat.message": async (input, output) => {
       const sid = input.sessionID;
-      return enqueue(sid, "chat.message", async (state) => {
+      return enqueue(sid, "chat.message", async (state, timestamp) => {
         if (input.model) {
           state.model = input.model.modelID;
           state.provider = input.model.providerID;
@@ -276,31 +303,31 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           prompt: prompt || undefined,
           model: state.model,
           provider: state.provider,
-        });
-      });
+        }, timestamp);
+      }, false, output.message?.time?.created);
     },
     "tool.execute.before": async (input, output) => {
       const sid = input.sessionID;
       return enqueue(
         sid,
         "before-tool",
-        async (state) => {
-          await beginTurn(sid, state);
+        async (state, timestamp) => {
+          await beginTurn(sid, state, {}, timestamp);
           const args = output.args || {};
-          state.tools.set(input.callID, { start: Date.now(), args });
+          state.tools.set(input.callID, { start: Date.parse(timestamp), args });
           await t.hook(sid, "before-tool", {
             tool_name: input.tool,
             tool_call_id: input.callID,
             tool_input: args,
-          });
+          }, timestamp);
         },
         true,
       );
     },
     "tool.execute.after": async (input, output) => {
       const sid = input.sessionID;
-      return enqueue(sid, "after-tool", async (state) => {
-        await beginTurn(sid, state);
+      return enqueue(sid, "after-tool", async (state, timestamp) => {
+        await beginTurn(sid, state, {}, timestamp);
         const saved = state.tools.get(input.callID),
           args = saved?.args || {};
         const raw = output.output;
@@ -320,8 +347,10 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           file_path: args.filePath || args.path,
           exit_code: typeof exit === "number" ? exit : undefined,
           status: "completed",
-          duration: saved ? Date.now() - saved.start : undefined,
-        });
+          duration: saved
+            ? Math.max(0, Date.parse(timestamp) - saved.start)
+            : undefined,
+        }, timestamp);
         state.tools.delete(input.callID);
       });
     },
@@ -371,26 +400,24 @@ const setupV2 = async (ctx, invoke) => {
   const known = new Set();
   const own = (sid) => typeof sid === "string" && !!sid && known.has(sid);
 
-  const userPrompt = (sid, payload) =>
-    enqueue(sid, "user-prompt", (state) => t.beginTurn(sid, state, payload));
   const toolBefore = (sid, tool, callID, args) =>
     enqueue(
       sid,
       "before-tool",
-      async (state) => {
-        await t.beginTurn(sid, state);
-        state.tools.set(callID, { start: Date.now(), args });
+      async (state, timestamp) => {
+        await t.beginTurn(sid, state, {}, timestamp);
+        state.tools.set(callID, { start: Date.parse(timestamp), args });
         await t.hook(sid, "before-tool", {
           tool_name: tool,
           tool_call_id: callID,
           tool_input: args,
-        });
+        }, timestamp);
       },
       true,
     );
   const toolAfter = (sid, tool, callID, args, toolOutput, status, exit) =>
-    enqueue(sid, "after-tool", async (state) => {
-      await t.beginTurn(sid, state);
+    enqueue(sid, "after-tool", async (state, timestamp) => {
+      await t.beginTurn(sid, state, {}, timestamp);
       const saved = state.tools.get(callID);
       const truncated =
         toolOutput != null
@@ -406,8 +433,10 @@ const setupV2 = async (ctx, invoke) => {
         file_path: args?.filePath || args?.path,
         exit_code: typeof exit === "number" ? exit : undefined,
         status,
-        duration: saved ? Date.now() - saved.start : undefined,
-      });
+        duration: saved
+          ? Math.max(0, Date.parse(timestamp) - saved.start)
+          : undefined,
+      }, timestamp);
       state.tools.delete(callID);
     });
 
@@ -415,15 +444,17 @@ const setupV2 = async (ctx, invoke) => {
     await ctx.session.hook("prompt", async (event) => {
       const sid = event.sessionID;
       known.add(sid);
-      let model, provider;
-      try {
-        const info = await ctx.session.get({ sessionID: sid });
-        model = info?.model?.id;
-        provider = info?.model?.providerID;
-      } catch {}
-      return userPrompt(sid, {
-        prompt: (event.prompt?.text ?? "").trim() || undefined,
-        ...(model ? { model, provider } : {}),
+      return enqueue(sid, "user-prompt", async (state, timestamp) => {
+        let model, provider;
+        try {
+          const info = await ctx.session.get({ sessionID: sid });
+          model = info?.model?.id;
+          provider = info?.model?.providerID;
+        } catch {}
+        await t.beginTurn(sid, state, {
+          prompt: (event.prompt?.text ?? "").trim() || undefined,
+          ...(model ? { model, provider } : {}),
+        }, timestamp);
       });
     });
     await ctx.tool.hook("execute.before", (event) => {
@@ -479,6 +510,7 @@ const setupV2 = async (ctx, invoke) => {
         const sid = data.sessionID;
         const loc = ev.location?.directory;
         if (loc !== undefined && loc !== directory) continue;
+        const timestamp = eventTimestamp(ev.created);
         switch (ev.type) {
           case "session.inbox.enqueued":
           case "session.inbox.delivered":
@@ -486,28 +518,36 @@ const setupV2 = async (ctx, invoke) => {
             break;
           case "session.execution.started":
             if (own(sid))
-              enqueue(sid, ev.type, (state) => t.beginTurn(sid, state));
+              enqueue(
+                sid,
+                ev.type,
+                (state, timestamp) => t.beginTurn(sid, state, {}, timestamp),
+                false,
+                timestamp,
+              );
             break;
           case "session.execution.succeeded":
           case "session.execution.failed":
           case "session.execution.interrupted":
           case "session.idle":
             if (own(sid))
-              enqueue(sid, ev.type, (state) => stopTurn(sid, state));
+              enqueue(sid, ev.type, (state, timestamp) => stopTurn(sid, state, timestamp),
+                false, timestamp);
             break;
           case "session.status":
             if (own(sid) && data.status?.type === "idle")
-              enqueue(sid, ev.type, (state) => stopTurn(sid, state));
+              enqueue(sid, ev.type, (state, timestamp) => stopTurn(sid, state, timestamp),
+                false, timestamp);
             break;
           case "session.step.started":
             if (!own(sid)) break;
-            enqueue(sid, ev.type, async (state) => {
+            enqueue(sid, ev.type, async (state, timestamp) => {
               if (data.model?.id) state.model = data.model.id;
               if (data.model?.providerID)
                 state.provider = data.model.providerID;
-              await t.beginTurn(sid, state);
+              await t.beginTurn(sid, state, {}, timestamp);
               state.steps.add(ev.id);
-            });
+            }, false, timestamp);
             break;
           case "session.step.ended":
           case "session.step.failed":
@@ -550,7 +590,14 @@ const setupV2 = async (ctx, invoke) => {
               });
             break;
           case "session.deleted":
-            if (own(sid)) enqueue(sid, ev.type, () => t.endSession(sid));
+            if (own(sid))
+              enqueue(
+                sid,
+                ev.type,
+                (_state, timestamp) => t.endSession(sid, timestamp),
+                false,
+                timestamp,
+              );
             known.delete(sid);
             break;
         }

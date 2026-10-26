@@ -48,6 +48,44 @@ async function fixture(
 }
 
 describe("concurrent Atomic sessions", () => {
+  test("v1 preserves native session and message creation timestamps", async () => {
+    const f = await fixture();
+    await f.event("session.created", {
+      info: { id: "source-time", time: { created: 1_792_920_379_100 } },
+    });
+    await f.plugin["chat.message"](
+      { sessionID: "source-time" },
+      {
+        message: { time: { created: 1_792_920_379_589 } },
+        parts: [{ type: "text", text: "Keep the source time" }],
+      },
+    );
+    expect(f.calls[0].payload.timestamp).toBe("2026-10-25T09:26:19.100Z");
+    expect(f.calls[1].payload.timestamp).toBe("2026-10-25T09:26:19.589Z");
+  });
+
+  test("v1 captures tool receipt times before queueing and excludes queue delay from durations", async () => {
+    let now = 1_792_920_379_100;
+    spyOn(Date, "now").mockImplementation(() => now);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixture(async (verb) => {
+      if (verb === "session-start") await gate;
+      return { exitCode: 0, stderr: "" };
+    });
+    const input = { sessionID: "queued-time", callID: "tool", tool: "read" };
+    const before = f.plugin["tool.execute.before"](input, { args: {} });
+    now = 1_792_920_379_589;
+    const after = f.plugin["tool.execute.after"](input, { output: "Done" });
+    now += 60_000;
+    release();
+    await Promise.all([before, after]);
+    expect(f.calls.find((c) => c.verb === "before-tool").payload.timestamp)
+      .toBe("2026-10-25T09:26:19.100Z");
+    expect(f.calls.find((c) => c.verb === "after-tool").payload)
+      .toMatchObject({ timestamp: "2026-10-25T09:26:19.589Z", duration: 489 });
+  });
+
   for (const scenario of ["existing edits", "handoff after a recorded turn"]) {
     test(`${scenario} do not block later bash commands or Stop`, async () => {
       let file: string;
@@ -491,6 +529,7 @@ describe("OpenCode v2 plugin", () => {
     return {
       calls,
       root,
+      ctx,
       bus,
       cleanup,
       hooks,
@@ -517,6 +556,135 @@ describe("OpenCode v2 plugin", () => {
     expect(pluginDefault.id).toBe("atomic-hooks");
     expect(pluginDefault.server).toBe(AtomicHooksPlugin);
     expect(typeof pluginDefault.setup).toBe("function");
+  });
+
+  test("v2 forwards native lifecycle times despite a blocked hook queue", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixtureV2(async (verb) => {
+      if (verb === "session-start") await gate;
+      return { exitCode: 0, stderr: "" };
+    });
+    f.event("session.inbox.enqueued", { sessionID: "native-time" }, { directory: f.root });
+    f.event("session.execution.started", { sessionID: "native-time" }, undefined, 1_792_920_379_100);
+    f.event("session.execution.succeeded", { sessionID: "native-time" }, undefined, 1_792_920_379_589);
+    await until(() => f.calls.some((c) => c.verb === "session-start"));
+    release();
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    expect(f.calls.find((c) => c.verb === "user-prompt").payload.timestamp)
+      .toBe("2026-10-25T09:26:19.100Z");
+    expect(f.calls.find((c) => c.verb === "stop").payload)
+      .toMatchObject({ timestamp: "2026-10-25T09:26:19.589Z", turn_duration_ms: 489 });
+    f.event("session.deleted", { sessionID: "native-time" }, undefined, 1_792_920_380_123);
+    await until(() => f.calls.some((c) => c.verb === "session-end"));
+    expect(f.calls.at(-1).payload.timestamp).toBe("2026-10-25T09:26:20.123Z");
+    await f.cleanup?.();
+  });
+
+  test("v2 captures prompt time before its asynchronous model lookup", async () => {
+    const source = 1_792_920_379_589;
+    let now = source;
+    spyOn(Date, "now").mockImplementation(() => now);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixtureV2();
+    f.ctx.session.get = async () => {
+      await gate;
+      return { model: { id: "model", providerID: "provider" } };
+    };
+    const prompt = f.prompt("Capture before awaiting");
+    now += 60_000;
+    release();
+    await prompt;
+    expect(f.calls.find((c) => c.verb === "user-prompt").payload.timestamp)
+      .toBe("2026-10-25T09:26:19.589Z");
+    await f.cleanup?.();
+  });
+
+  test("v2 retries a failed Stop with its original source timestamp", async () => {
+    let fail = true;
+    const f = await fixtureV2(async (verb) => {
+      if (verb === "stop" && fail) {
+        fail = false;
+        return { exitCode: 1, stderr: "owner unavailable" };
+      }
+      return { exitCode: 0, stderr: "" };
+    });
+    f.event("session.inbox.enqueued", { sessionID: "retry-time" }, { directory: f.root });
+    f.event("session.execution.started", { sessionID: "retry-time" }, undefined, 1_792_920_379_100);
+    f.event("session.execution.succeeded", { sessionID: "retry-time" }, undefined, 1_792_920_379_589);
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    f.event("session.idle", { sessionID: "retry-time" }, undefined, 1_792_920_381_000);
+    await until(() => f.calls.filter((c) => c.verb === "stop").length === 2);
+    for (const stop of f.calls.filter((c) => c.verb === "stop")) {
+      expect(stop.payload).toMatchObject({
+        timestamp: "2026-10-25T09:26:19.589Z", turn_duration_ms: 489,
+      });
+    }
+    await f.cleanup?.();
+  });
+
+  test("v2 captures tool receipt times before a blocked queue", async () => {
+    let now = 1_792_920_379_100;
+    spyOn(Date, "now").mockImplementation(() => now);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixtureV2(async (verb) => {
+      if (verb === "session-start") await gate;
+      return { exitCode: 0, stderr: "" };
+    });
+    const input = { sessionID: "tool-time", id: "tool", tool: "read", input: {} };
+    const before = f.toolHooks["execute.before"](input);
+    now = 1_792_920_379_589;
+    const after = f.toolHooks["execute.after"]({ ...input, status: "completed" });
+    now += 60_000;
+    release();
+    await Promise.all([before, after]);
+    expect(f.calls.find((c) => c.verb === "before-tool").payload.timestamp)
+      .toBe("2026-10-25T09:26:19.100Z");
+    expect(f.calls.find((c) => c.verb === "after-tool").payload)
+      .toMatchObject({ timestamp: "2026-10-25T09:26:19.589Z", duration: 489 });
+    await f.cleanup?.();
+  });
+
+  test("v2 missing or invalid native times fall back to receipt time", async () => {
+    const f = await fixtureV2();
+    for (const created of [undefined, null, NaN, Infinity, "invalid"]) {
+      const sid = `fallback-${String(created)}`;
+      const before = Date.now();
+      f.event("session.inbox.enqueued", { sessionID: sid }, { directory: f.root });
+      f.bus.push({ type: "session.execution.started", data: { sessionID: sid }, created });
+      await until(() => f.calls.some((c) => c.verb === "user-prompt" && c.payload.session_id === sid));
+      const call = f.calls.find((c) => c.verb === "user-prompt" && c.payload.session_id === sid);
+      const captured = Date.parse(call.payload.timestamp);
+      expect(captured).toBeGreaterThanOrEqual(before);
+      expect(captured).toBeLessThanOrEqual(Date.now());
+    }
+    await f.cleanup?.();
+  });
+
+  test("v2 preserves skewed source timestamps without negative durations", async () => {
+    const f = await fixtureV2();
+    f.event("session.inbox.enqueued", { sessionID: "skew-time" }, { directory: f.root });
+    f.event("session.execution.started", { sessionID: "skew-time" }, undefined, 1_792_920_379_589);
+    f.event("session.execution.succeeded", { sessionID: "skew-time" }, undefined, 1_792_920_379_100);
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    expect(f.calls.find((c) => c.verb === "stop").payload)
+      .toMatchObject({ timestamp: "2026-10-25T09:26:19.100Z", turn_duration_ms: 0 });
+    await f.cleanup?.();
+  });
+
+  test("v2 step activation preserves explicit epoch milliseconds without unit inference", async () => {
+    const f = await fixtureV2();
+    f.event("session.inbox.enqueued", { sessionID: "epoch-time" }, { directory: f.root });
+    f.event("session.step.started", { sessionID: "epoch-time" }, undefined, 0);
+    f.event("session.execution.succeeded", { sessionID: "epoch-time" }, undefined, 489);
+    await until(() => f.calls.some((c) => c.verb === "stop"));
+    expect(f.calls.find((c) => c.verb === "user-prompt").payload.timestamp)
+      .toBe("1970-01-01T00:00:00.000Z");
+    expect(f.calls.find((c) => c.verb === "stop").payload)
+      .toMatchObject({ timestamp: "1970-01-01T00:00:00.489Z", turn_duration_ms: 489 });
+    await f.cleanup?.();
   });
 
   test("records a full v2 turn with tools, reasoning, tokens and response", async () => {
