@@ -185,6 +185,13 @@ const createTracker = (directory, invoke) => {
     reset(state);
     sessions.delete(sid);
   }
+  // Read-only lookup: never materialize state just to ask. A session the
+  // plugin has started has a session ledger on disk, which is the CLI's
+  // precondition for accepting a turn-bound work-start declaration.
+  function isStarted(sid) {
+    const state = sessions.get(sid);
+    return !!(state && state.started);
+  }
   return {
     stateFor,
     hook,
@@ -193,6 +200,7 @@ const createTracker = (directory, invoke) => {
     beginTurn,
     stopTurn,
     endSession,
+    isStarted,
   };
 };
 
@@ -325,9 +333,20 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
         state.tools.delete(input.callID);
       });
     },
-    "shell.env": async (_input, output) => {
+    "shell.env": async (input, output) => {
       output.env.ATOMIC_AGENT = "opencode";
       output.env.ATOMIC_AGENT_VERSION = ATOMIC_AGENT_VERSION;
+      // Supply session context so a work-start declaration
+      // (`atomic intent update <id> --status in_progress`) binds the intent
+      // to this turn: the turn's recording then carries the intent UID in
+      // plan_id, which is how the intent graph attributes the turn's changes.
+      // Without the variable the CLI stays a status-only update. Only
+      // sessions this plugin started get it — the CLI rejects a declaration
+      // for an unknown session, and a failed binding fails the whole update.
+      // Terminal shells (no sessionID in the event) keep the human path.
+      const sid = input?.sessionID;
+      if (typeof sid === "string" && sid && t.isStarted(sid))
+        output.env.ATOMIC_SESSION_ID = sid;
     },
   };
 };
@@ -365,7 +384,7 @@ const setupV2 = async (ctx, invoke) => {
     directory,
     invoke ?? ((json, verb) => spawnHook(directory, json, verb)),
   );
-  const { enqueue, stopTurn } = t;
+  const { enqueue, stopTurn, isStarted } = t;
   // The public event stream may not be scoped to this plugin instance's
   // location, so only track sessions that are known to belong to it.
   const known = new Set();
@@ -458,6 +477,13 @@ const setupV2 = async (ctx, invoke) => {
     await ctx.shell.hook("create.before", (event) => {
       event.env.ATOMIC_AGENT = "opencode";
       event.env.ATOMIC_AGENT_VERSION = ATOMIC_AGENT_VERSION;
+      // Same session-context contract as the v1 `shell.env` hook: a started
+      // session's shells carry ATOMIC_SESSION_ID so `atomic intent update
+      // --status in_progress` binds the intent to the active turn instead of
+      // degrading to a status-only update.
+      const sid = event?.sessionID;
+      if (typeof sid === "string" && sid && isStarted(sid))
+        event.env.ATOMIC_SESSION_ID = sid;
     });
   } catch (error) {
     try {
