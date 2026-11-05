@@ -191,6 +191,76 @@ describe("concurrent Atomic sessions", () => {
     });
   });
 
+  test("a prompt that lands mid-turn starts its own turn once its assistant message begins", async () => {
+    const f = await fixture();
+    const part = (p) => f.event("message.part.updated", { part: { sessionID: "s", ...p } });
+    const assistant = (id, parentID) =>
+      f.event("message.updated", { info: { sessionID: "s", id, role: "assistant", parentID } });
+    await f.prompt("s");
+    await assistant("a1", "u1");
+    await part({ id: "s1", type: "step-start", messageID: "a1" });
+    await part({ id: "f1", type: "step-finish", messageID: "a1", tokens: { input: 1, output: 10 }, cost: 0.1 });
+    // The second prompt arrives while the first turn is still running.
+    await f.plugin["chat.message"](
+      { sessionID: "s" },
+      { parts: [{ type: "text", text: "second prompt" }] },
+    );
+    expect(f.calls.filter((c) => c.verb === "user-prompt")).toHaveLength(1);
+    // The first turn still owns one more step after that prompt arrived.
+    await part({ id: "s2", type: "step-start", messageID: "a1" });
+    await part({ id: "f2", type: "step-finish", messageID: "a1", tokens: { input: 2, output: 20 }, cost: 0.2 });
+    // The model starts answering the second prompt: that is the turn boundary.
+    await assistant("a2", "u2");
+    await part({ id: "s3", type: "step-start", messageID: "a2" });
+    const stops = f.calls.filter((c) => c.verb === "stop");
+    expect(stops).toHaveLength(1);
+    expect(stops[0].payload).toMatchObject({
+      turn_number: 1,
+      step_count: 2,
+      input_tokens: 3,
+      output_tokens: 30,
+    });
+    expect(stops[0].payload.cost_usd).toBeCloseTo(0.3);
+    expect(f.calls.slice(-2).map((c) => c.verb)).toEqual(["stop", "user-prompt"]);
+    expect(f.calls.at(-1).payload.prompt).toBe("second prompt");
+    await part({ id: "f3", type: "step-finish", messageID: "a2", tokens: { input: 4, output: 40 }, cost: 0.4 });
+    await f.event("session.idle", { sessionID: "s" });
+    expect(f.calls.at(-1).verb).toBe("stop");
+    expect(f.calls.at(-1).payload).toMatchObject({
+      turn_number: 2,
+      step_count: 1,
+      input_tokens: 4,
+      output_tokens: 40,
+    });
+    expect(f.calls.at(-1).payload.cost_usd).toBeCloseTo(0.4);
+  });
+
+  test("a prompt queued past an idle boundary still names the turn that answers it", async () => {
+    const f = await fixture();
+    await f.prompt("s");
+    await f.event("message.updated", {
+      info: { sessionID: "s", id: "a1", role: "assistant", parentID: "u1" },
+    });
+    await f.event("message.part.updated", {
+      part: { sessionID: "s", id: "s1", type: "step-start", messageID: "a1" },
+    });
+    await f.plugin["chat.message"](
+      { sessionID: "s" },
+      { parts: [{ type: "text", text: "queued prompt" }] },
+    );
+    await f.event("session.idle", { sessionID: "s" });
+    expect(f.calls.filter((c) => c.verb === "user-prompt")).toHaveLength(1);
+    await f.event("message.updated", {
+      info: { sessionID: "s", id: "a2", role: "assistant", parentID: "u2" },
+    });
+    await f.event("message.part.updated", {
+      part: { sessionID: "s", id: "s2", type: "step-start", messageID: "a2" },
+    });
+    const prompts = f.calls.filter((c) => c.verb === "user-prompt");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1].payload.prompt).toBe("queued prompt");
+  });
+
   test("failed activation blocks a tool and can be retried", async () => {
     let fail = true;
     const f = await fixture(async (verb) => {
