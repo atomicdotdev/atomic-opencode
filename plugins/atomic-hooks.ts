@@ -49,6 +49,11 @@ const createTracker = (directory, invoke) => {
         steps: new Set(),
         completedSteps: new Set(),
         finishes: new Map(),
+        // The user message the active turn answers, the user message each
+        // assistant message answers, and prompts that arrived mid-turn.
+        turnUser: null,
+        parents: new Map(),
+        pending: [],
       });
     return sessions.get(sid);
   }
@@ -93,19 +98,50 @@ const createTracker = (directory, invoke) => {
       state.started = true;
     }
   }
-  async function beginTurn(sid, state, payload = {}) {
+  async function beginTurn(sid, state, payload) {
     await start(sid, state);
     if (state.active) return;
     // Programmatic/subagent and resumed turns need not emit chat.message.
     // A tool or model step must activate the CLI turn before it can end.
     // Do not claim activation until the foreground hook has succeeded.
+    // A turn activated by a step or tool takes the oldest prompt that is
+    // still waiting for its answer.
+    const prompt = payload ?? state.pending.shift() ?? {};
     await hook(sid, "user-prompt", {
       model: state.model,
       provider: state.provider,
-      ...payload,
+      ...prompt,
     });
     state.active = true;
     state.turnStartTime = Date.now();
+  }
+  // A prompt is a turn of its own. OpenCode keeps running the current turn
+  // after a new prompt arrives, and only emits session.idle once every
+  // queued prompt is answered, so a prompt that lands mid-turn waits until
+  // the model starts answering it instead of being folded into the running
+  // turn (whose tokens and cost it would otherwise absorb).
+  function queuePrompt(sid, state, payload) {
+    if (state.active && state.turnUser != null) {
+      state.pending.push(payload);
+      return Promise.resolve();
+    }
+    return beginTurn(sid, state, payload);
+  }
+  // A model step belongs to the user message its assistant message answers.
+  // The first step answering a different user message closes the running
+  // turn and opens the next one.
+  async function beginStep(sid, state, stepID, messageID) {
+    const parent =
+      messageID != null ? state.parents.get(messageID) : undefined;
+    const answersAnotherPrompt =
+      state.active &&
+      parent != null &&
+      state.turnUser != null &&
+      parent !== state.turnUser;
+    if (answersAnotherPrompt) await stopTurn(sid, state);
+    await beginTurn(sid, state);
+    if (parent != null && state.turnUser == null) state.turnUser = parent;
+    state.steps.add(stepID);
   }
   function reset(state) {
     state.reasoning.clear();
@@ -115,6 +151,7 @@ const createTracker = (directory, invoke) => {
     state.finishes.clear();
     state.tools.clear();
     state.turnStartTime = null;
+    state.turnUser = null;
   }
   async function stopTurn(sid, state) {
     if (!state.active) return;
@@ -175,6 +212,8 @@ const createTracker = (directory, invoke) => {
     state.turns = turn;
     state.active = false;
     state.completedSteps = new Set(state.steps);
+    for (const [assistantID, userID] of state.parents)
+      if (userID === state.turnUser) state.parents.delete(assistantID);
     reset(state);
   }
   async function endSession(sid) {
@@ -191,6 +230,8 @@ const createTracker = (directory, invoke) => {
     enqueue,
     start,
     beginTurn,
+    beginStep,
+    queuePrompt,
     stopTurn,
     endSession,
   };
@@ -202,7 +243,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
   const t = createTracker(directory, async (json, verb) =>
     $`echo ${json} | atomic agent hooks opencode ${verb} --foreground`.nothrow(),
   );
-  const { enqueue, start, beginTurn, stopTurn } = t;
+  const { enqueue, start, beginTurn, beginStep, queuePrompt, stopTurn } = t;
   return {
     event: async ({ event }) => {
       const props = event.properties ?? {};
@@ -215,6 +256,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
         return enqueue(info?.sessionID, event.type, (state) => {
           if (info.role === "assistant" && info.id) {
             state.assistants.add(info.id);
+            if (info.parentID) state.parents.set(info.id, info.parentID);
             if (info.modelID) state.model = info.modelID;
             if (info.providerID) state.provider = info.providerID;
           }
@@ -235,8 +277,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           } else if (part.type === "step-start") {
             // OpenCode can resend the last step snapshot after idle.
             if (state.completedSteps.has(part.id)) return;
-            await beginTurn(part.sessionID, state);
-            state.steps.add(part.id);
+            await beginStep(part.sessionID, state, part.id, part.messageID);
           } else if (part.type === "step-finish") {
             // Updates are snapshots, not incremental token deltas.
             state.finishes.set(part.id, part);
@@ -272,7 +313,7 @@ export const AtomicHooksPlugin = async ({ directory, $ }) => {
           .map((p) => p.text)
           .join("\n")
           .trim();
-        await beginTurn(sid, state, {
+        await queuePrompt(sid, state, {
           prompt: prompt || undefined,
           model: state.model,
           provider: state.provider,
